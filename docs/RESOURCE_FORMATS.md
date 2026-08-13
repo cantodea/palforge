@@ -32,6 +32,8 @@ MKF 文件 → 偏移表 → chunk → YJ_1 / YJ_2 → 资源类型识别
 - YJ 解压后的 payload；
 - 当前调色板和 sprite 帧渲染得到的 PNG。
 
+资源页的调色板工作台不会更改索引像素或 `PAT.MKF`：昼夜混合、亮度、饱和度和对比度只作用于 Canvas 与 PNG 导出。sprite 播放器同样保留资源原有的帧顺序和数量。
+
 ## 当前边界
 
 - MAP 场景、RNG 动画、GOP tileset、脚本 opcode 和对象表尚未接入真实编辑器模型。

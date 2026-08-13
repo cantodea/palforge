@@ -9,12 +9,17 @@ import {
   LoaderCircle,
   Moon,
   Palette,
+  Pause,
+  Play,
+  Repeat2,
+  RotateCcw,
   ScanSearch,
+  SlidersHorizontal,
   Sun,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes, readMkfChunk, type MkfChunk } from '../core/mkf'
-import { grayscalePalette } from '../core/palette'
+import { adjustPalette, blendPalettes, grayscalePalette } from '../core/palette'
 import { indexedToRgba } from '../core/rle'
 import { inspectChunk, type ChunkInspection, type GameProfile } from '../core/resourceDecoder'
 import type { ImportedResource, PalPalette } from '../types'
@@ -38,6 +43,31 @@ const kindLabels: Record<ChunkInspection['kind'], string> = {
   palette: 'PAT PALETTE',
   binary: 'BINARY',
   empty: 'EMPTY',
+}
+
+function ToolSlider({
+  label,
+  value,
+  min,
+  max,
+  unit,
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  unit: string
+  disabled?: boolean
+  onChange: (value: number) => void
+}) {
+  return (
+    <label className={`tool-slider ${disabled ? 'disabled' : ''}`}>
+      <span>{label}<output>{value}{unit}</output></span>
+      <input type="range" min={min} max={max} value={value} disabled={disabled} onChange={(event) => onChange(Number(event.target.value))} />
+    </label>
+  )
 }
 
 function downloadBytes(bytes: Uint8Array, filename: string, type = 'application/octet-stream') {
@@ -107,27 +137,69 @@ export function ResourceBrowser({
   const [selectedChunk, setSelectedChunk] = useState(-1)
   const [inspection, setInspection] = useState<ChunkInspection | null>(null)
   const [frame, setFrame] = useState(0)
-  const [paletteKey, setPaletteKey] = useState('0-day')
+  const [playing, setPlaying] = useState(false)
+  const [loop, setLoop] = useState(true)
+  const [fps, setFps] = useState(8)
+  const [paletteIndex, setPaletteIndex] = useState(0)
+  const [nightMix, setNightMix] = useState(0)
+  const [brightness, setBrightness] = useState(100)
+  const [saturation, setSaturation] = useState(100)
+  const [contrast, setContrast] = useState(100)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
-  const selectedPalette = useMemo(() => {
+  const availablePalettes = useMemo(() => {
     const own = inspection?.palettes ?? []
-    const available = own.length > 0 ? own : palettes
-    return available.find((item) => `${item.index}-${item.variant}` === paletteKey) ?? available[0] ?? grayscalePalette()
-  }, [inspection, paletteKey, palettes])
+    return own.length > 0 ? own : palettes
+  }, [inspection, palettes])
+
+  const paletteIndexes = useMemo(
+    () => [...new Set(availablePalettes.map((item) => item.index))],
+    [availablePalettes],
+  )
+
+  const resolvedPaletteIndex = paletteIndexes.includes(paletteIndex) ? paletteIndex : (paletteIndexes[0] ?? -1)
+  const hasNightPalette = availablePalettes.some((item) => item.index === resolvedPaletteIndex && item.variant === 'night')
+
+  const selectedPalette = useMemo(() => {
+    const fallback = grayscalePalette()
+    const day = availablePalettes.find((item) => item.index === resolvedPaletteIndex && item.variant === 'day')
+      ?? availablePalettes.find((item) => item.index === resolvedPaletteIndex)
+      ?? fallback
+    const night = availablePalettes.find((item) => item.index === resolvedPaletteIndex && item.variant === 'night') ?? day
+    const blended = blendPalettes(day, night, nightMix / 100)
+    return adjustPalette(blended, {
+      brightness: brightness / 100,
+      saturation: saturation / 100,
+      contrast: contrast / 100,
+    })
+  }, [availablePalettes, brightness, contrast, nightMix, resolvedPaletteIndex, saturation])
 
   const image = inspection?.kind === 'sprite'
     ? inspection.frames[Math.min(frame, inspection.frames.length - 1)]?.image
     : inspection?.image
+  const frameCount = inspection?.kind === 'sprite' ? inspection.frames.length : 0
 
   useEffect(() => {
     setInspection(null)
     setError('')
     setFrame(0)
+    setPlaying(false)
     setSelectedChunk(-1)
   }, [selected?.path])
+
+  useEffect(() => {
+    if (!playing || frameCount <= 1) return
+    const timer = window.setInterval(() => {
+      setFrame((current) => loop ? (current + 1) % frameCount : Math.min(current + 1, frameCount - 1))
+    }, 1000 / fps)
+    return () => window.clearInterval(timer)
+  }, [fps, frameCount, loop, playing])
+
+  useEffect(() => {
+    if (playing && !loop && frameCount > 0 && frame >= frameCount - 1) setPlaying(false)
+  }, [frame, frameCount, loop, playing])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -146,18 +218,32 @@ export function ResourceBrowser({
     setLoading(true)
     setError('')
     setFrame(0)
+    setPlaying(false)
     try {
       const buffer = await selected.file.slice(chunk.offset, chunk.offset + chunk.size).arrayBuffer()
       const raw = readMkfChunk(buffer, { ...chunk, offset: 0 })
       const result = inspectChunk(raw, selected.name, chunk.index, profile)
       setInspection(result)
-      if (result.palettes?.[0]) setPaletteKey(`${result.palettes[0].index}-${result.palettes[0].variant}`)
+      if (result.palettes?.[0]) setPaletteIndex(result.palettes[0].index)
     } catch (reason) {
       setInspection(null)
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setLoading(false)
     }
+  }
+
+  const resetPalette = () => {
+    setNightMix(0)
+    setBrightness(100)
+    setSaturation(100)
+    setContrast(100)
+  }
+
+  const togglePlayback = () => {
+    if (frameCount <= 1) return
+    if (!playing && frame >= frameCount - 1) setFrame(0)
+    setPlaying((value) => !value)
   }
 
   const exportPng = () => {
@@ -238,10 +324,50 @@ export function ResourceBrowser({
 
           {inspection && (
             <div className="decode-details">
-              <div className="decode-badges"><span>{inspection.compression}</span><span>{kindLabels[inspection.kind]}</span><span>{formatBytes(inspection.raw.length)} → {formatBytes(inspection.payload.length)}</span></div>
-              {inspection.kind === 'sprite' && <div className="frame-control"><button className="icon-button" disabled={frame <= 0} onClick={() => setFrame((value) => Math.max(0, value - 1))}><ChevronLeft size={15} /></button><span>帧 {frame + 1} / {inspection.frames.length}</span><button className="icon-button" disabled={frame >= inspection.frames.length - 1} onClick={() => setFrame((value) => Math.min(inspection.frames.length - 1, value + 1))}><ChevronRight size={15} /></button></div>}
-              {(image || inspection.kind === 'palette') && (inspection.palettes?.length ?? palettes.length) > 0 && <label className="palette-picker"><Palette size={14} /><select value={paletteKey} onChange={(event) => setPaletteKey(event.target.value)}>{(inspection.palettes ?? palettes).map((item) => <option value={`${item.index}-${item.variant}`} key={`${item.index}-${item.variant}`}>PAT #{item.index} · {item.variant === 'night' ? '夜间' : '日间'}</option>)}</select>{selectedPalette.variant === 'night' ? <Moon size={13} /> : <Sun size={13} />}</label>}
-              {inspection.notes.length > 0 && <div className="decode-notes">{inspection.notes.map((note) => <span key={note}>{note}</span>)}</div>}
+              <div className="decode-summary">
+                <div className="decode-badges"><span>{inspection.compression}</span><span>{kindLabels[inspection.kind]}</span><span>{formatBytes(inspection.raw.length)} → {formatBytes(inspection.payload.length)}</span></div>
+                {inspection.notes.length > 0 && <div className="decode-notes">{inspection.notes.map((note) => <span key={note}>{note}</span>)}</div>}
+              </div>
+
+              {(image || inspection.kind === 'palette') && (
+                <div className={`resource-tool-grid ${inspection.kind === 'sprite' ? 'with-player' : ''}`}>
+                  <section className="resource-tool-card palette-workbench">
+                    <header>
+                      <span className="tool-card-icon"><SlidersHorizontal size={15} /></span>
+                      <span><strong>调色板工作台</strong><small>只影响预览与 PNG 导出</small></span>
+                      <button className="icon-button" title="重置调色板调节" onClick={resetPalette}><RotateCcw size={14} /></button>
+                    </header>
+                    <div className="palette-source-row">
+                      <label><Palette size={13} /><span>调色板</span><select value={resolvedPaletteIndex} disabled={paletteIndexes.length === 0} onChange={(event) => setPaletteIndex(Number(event.target.value))}>{paletteIndexes.length > 0 ? paletteIndexes.map((index) => <option value={index} key={index}>PAT #{index}</option>) : <option value={-1}>灰度回退</option>}</select></label>
+                      <div className="day-night-shortcuts"><button className={nightMix === 0 ? 'active' : ''} onClick={() => setNightMix(0)}><Sun size={13} />白天</button><button className={nightMix === 100 ? 'active' : ''} disabled={!hasNightPalette} onClick={() => setNightMix(100)}><Moon size={13} />夜间</button></div>
+                    </div>
+                    <div className="palette-slider-grid">
+                      <ToolSlider label="昼夜混合" value={nightMix} min={0} max={100} unit="%" disabled={!hasNightPalette} onChange={setNightMix} />
+                      <ToolSlider label="亮度" value={brightness} min={25} max={200} unit="%" onChange={setBrightness} />
+                      <ToolSlider label="饱和度" value={saturation} min={0} max={200} unit="%" onChange={setSaturation} />
+                      <ToolSlider label="对比度" value={contrast} min={25} max={200} unit="%" onChange={setContrast} />
+                    </div>
+                  </section>
+
+                  {inspection.kind === 'sprite' && (
+                    <section className="resource-tool-card animation-player">
+                      <header>
+                        <span className="tool-card-icon"><Play size={15} /></span>
+                        <span><strong>动画播放器</strong><small>{frameCount} 帧 sprite 序列</small></span>
+                        <button className={`loop-button ${loop ? 'active' : ''}`} onClick={() => setLoop((value) => !value)}><Repeat2 size={13} />循环</button>
+                      </header>
+                      <div className="player-transport">
+                        <button className="play-button" disabled={frameCount <= 1} onClick={togglePlayback}>{playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}</button>
+                        <button className="icon-button" disabled={frame <= 0} onClick={() => { setPlaying(false); setFrame((value) => Math.max(0, value - 1)) }}><ChevronLeft size={15} /></button>
+                        <input aria-label="动画帧" type="range" min={0} max={Math.max(0, frameCount - 1)} value={frame} disabled={frameCount <= 1} onChange={(event) => setFrame(Number(event.target.value))} />
+                        <button className="icon-button" disabled={frame >= frameCount - 1} onClick={() => { setPlaying(false); setFrame((value) => Math.min(frameCount - 1, value + 1)) }}><ChevronRight size={15} /></button>
+                        <output>{frame + 1} / {frameCount}</output>
+                      </div>
+                      <ToolSlider label="播放速度" value={fps} min={1} max={24} unit=" FPS" onChange={setFps} />
+                    </section>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
