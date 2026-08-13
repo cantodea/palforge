@@ -24,6 +24,22 @@ export type ChunkInspection = {
 
 const COMPRESSED_ARCHIVES = new Set(['ABC.MKF', 'F.MKF', 'FBP.MKF', 'FIRE.MKF', 'GOP.MKF', 'MAP.MKF', 'MGO.MKF'])
 
+const ARCHIVE_NOTES: Record<string, string> = {
+  'ABC.MKF': 'ABC.MKF 通常是敌方战斗 sprite；非空资源仍未识别时可能存在原版兼容性偏移。',
+  'BALL.MKF': 'BALL.MKF 通常是物品或装备的单张 RLE 图像。',
+  'DATA.MKF': 'DATA.MKF 是角色、敌人、法术和战场等结构化数据；数据表解析器尚未实现。',
+  'F.MKF': 'F.MKF 通常是玩家战斗 sprite。',
+  'FIRE.MKF': 'FIRE.MKF 通常是战斗与法术效果 sprite。',
+  'GOP.MKF': 'GOP.MKF 是地图图块资源，需要与 MAP.MKF 联合解析；tileset 预览尚未实现。',
+  'MAP.MKF': 'MAP.MKF 是场景地图数据，需要与 GOP.MKF 联合解析；地图解码器尚未实现。',
+  'MGO.MKF': 'MGO.MKF 通常是场景角色与对象 sprite。',
+  'MUS.MKF': 'MUS.MKF 是音乐资源；MIDI/RIX 播放器尚未实现。',
+  'RGM.MKF': 'RGM.MKF 通常是角色头像等单张 RLE 图像。',
+  'RNG.MKF': 'RNG.MKF 内部还有一层帧索引并保存增量动画；RNG 播放器尚未实现。',
+  'SOUNDS.MKF': 'SOUNDS.MKF 是 WAVE 音效库；音频播放器尚未实现。',
+  'SSS.MKF': 'SSS.MKF 是场景、对象和脚本结构化数据；脚本解析器尚未实现。',
+}
+
 function tryYj2(bytes: Uint8Array, heuristic = true): Uint8Array | null {
   if (heuristic && !looksLikeYj2(bytes)) return null
   try { return decompressYj2(bytes) } catch { return null }
@@ -90,6 +106,6 @@ export function inspectChunk(
 
   if (hasAscii(payload, 'YJ_1')) notes.push('检测到 YJ_1，但未成功解码')
   if (payload.length >= 4) notes.push(`前四字节（LE）：0x${readU32(payload, 0).toString(16).padStart(8, '0')}`)
-  notes.push('该 chunk 暂未识别为 sprite、RLE、FBP 或 PAT')
+  notes.push(ARCHIVE_NOTES[normalizedName] ?? '该 chunk 暂未识别为 sprite、RLE、FBP 或 PAT')
   return { archiveName, chunkIndex, raw, payload, compression, kind: 'binary', frames: [], notes }
 }

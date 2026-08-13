@@ -13,4 +13,10 @@ describe('resource inspection', () => {
     expect(result.kind).toBe('palette')
     expect(result.palettes).toHaveLength(1)
   })
+
+  it('explains known structured archives instead of treating every binary as a broken image', () => {
+    const result = inspectChunk(new Uint8Array([1, 2, 3, 4, 5]), 'MAP.MKF', 3, 'dos')
+    expect(result.kind).toBe('binary')
+    expect(result.notes.join(' ')).toContain('地图数据')
+  })
 })

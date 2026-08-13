@@ -11,4 +11,12 @@ describe('PAL sprites', () => {
     expect(frames).toHaveLength(2)
     expect(frames.map((frame) => frame.image.pixels[0])).toEqual([7, 9])
   })
+
+  it('uses the payload boundary when a shipped sprite has a broken final sentinel', () => {
+    const frameA = [1, 0, 1, 0, 1, 7]
+    const frameB = [1, 0, 1, 0, 1, 9]
+    const bytes = new Uint8Array([3, 0, 6, 0, 0, 0, ...frameA, ...frameB])
+    expect(looksLikeSprite(bytes)).toBe(true)
+    expect(decodeSprite(bytes).map((frame) => frame.image.pixels[0])).toEqual([7, 9])
+  })
 })

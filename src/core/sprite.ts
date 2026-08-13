@@ -16,20 +16,38 @@ export type SpriteFrame = {
   image: IndexedImage
 }
 
+type FrameRange = { index: number; offset: number; end: number }
+
+/**
+ * PAL sprites have N frame starts followed by an end sentinel. Some shipped
+ * resources (including enemy battle sprites) contain a zero/broken sentinel;
+ * SDLPAL never reads that sentinel when locating a frame, so use the payload
+ * boundary as the final end in that case.
+ */
+function frameRanges(bytes: Uint8Array): FrameRange[] {
+  if (bytes.length < 4) return []
+  const tableWords = readU16(bytes, 0)
+  const frameCount = tableWords - 1
+  if (tableWords < 2 || tableWords > 4096 || tableWords * 2 > bytes.length) return []
+
+  const starts = Array.from({ length: frameCount }, (_, index) => ({
+    index,
+    offset: readU16(bytes, index * 2) * 2,
+  }))
+  if (starts[0]?.offset !== tableWords * 2) return []
+
+  return starts.flatMap((frame, position) => {
+    if (frame.offset < tableWords * 2 || frame.offset >= bytes.length) return []
+    const next = starts.slice(position + 1).find((candidate) => candidate.offset > frame.offset && candidate.offset <= bytes.length)
+    const sentinel = position === frameCount - 1 ? readU16(bytes, tableWords * 2 - 2) * 2 : 0
+    const end = next?.offset ?? (sentinel > frame.offset && sentinel <= bytes.length ? sentinel : bytes.length)
+    return end > frame.offset ? [{ ...frame, end }] : []
+  })
+}
+
 export function looksLikeSprite(bytes: Uint8Array): boolean {
-  if (bytes.length < 8) return false
   try {
-    const tableWords = readU16(bytes, 0)
-    if (tableWords < 2 || tableWords > 4096 || tableWords * 2 > bytes.length) return false
-    let previous = tableWords * 2
-    for (let index = 0; index < tableWords; index += 1) {
-      const offset = readU16(bytes, index * 2) * 2
-      if (offset < previous || offset > bytes.length) return false
-      previous = offset
-    }
-    const first = readU16(bytes, 0) * 2
-    const second = readU16(bytes, 2) * 2
-    return second > first && looksLikeRle(bytes.subarray(first, second))
+    return frameRanges(bytes).some(({ offset, end }) => looksLikeRle(bytes.subarray(offset, end)))
   } catch {
     return false
   }
@@ -37,14 +55,9 @@ export function looksLikeSprite(bytes: Uint8Array): boolean {
 
 export function decodeSprite(bytes: Uint8Array): SpriteFrame[] {
   if (!looksLikeSprite(bytes)) throw new SpriteFormatError('数据不是有效的 PAL sprite')
-  const tableWords = readU16(bytes, 0)
-  const frameCount = tableWords - 1
   const frames: SpriteFrame[] = []
 
-  for (let index = 0; index < frameCount; index += 1) {
-    const offset = readU16(bytes, index * 2) * 2
-    const end = readU16(bytes, (index + 1) * 2) * 2
-    if (end <= offset || end > bytes.length) continue
+  for (const { index, offset, end } of frameRanges(bytes)) {
     const encoded = bytes.subarray(offset, end)
     if (!looksLikeRle(encoded)) continue
     try {
