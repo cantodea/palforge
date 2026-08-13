@@ -3,6 +3,11 @@ export function readU16(bytes: Uint8Array, offset: number): number {
   return bytes[offset] | (bytes[offset + 1] << 8)
 }
 
+export function readI16(bytes: Uint8Array, offset: number): number {
+  const value = readU16(bytes, offset)
+  return value >= 0x8000 ? value - 0x10000 : value
+}
+
 export function readU32(bytes: Uint8Array, offset: number): number {
   if (offset < 0 || offset + 4 > bytes.length) throw new RangeError('读取 u32 时越界')
   return (

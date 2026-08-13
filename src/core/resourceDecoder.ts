@@ -22,7 +22,7 @@ export type ChunkInspection = {
   notes: string[]
 }
 
-const COMPRESSED_ARCHIVES = new Set(['ABC.MKF', 'F.MKF', 'FBP.MKF', 'FIRE.MKF', 'GOP.MKF', 'MAP.MKF', 'MGO.MKF'])
+const COMPRESSED_ARCHIVES = new Set(['ABC.MKF', 'F.MKF', 'FBP.MKF', 'FIRE.MKF', 'MAP.MKF', 'MGO.MKF'])
 
 const ARCHIVE_NOTES: Record<string, string> = {
   'ABC.MKF': 'ABC.MKF 通常是敌方战斗 sprite；非空资源仍未识别时可能存在原版兼容性偏移。',
@@ -30,19 +30,50 @@ const ARCHIVE_NOTES: Record<string, string> = {
   'DATA.MKF': 'DATA.MKF 是角色、敌人、法术和战场等结构化数据；数据表解析器尚未实现。',
   'F.MKF': 'F.MKF 通常是玩家战斗 sprite。',
   'FIRE.MKF': 'FIRE.MKF 通常是战斗与法术效果 sprite。',
-  'GOP.MKF': 'GOP.MKF 是地图图块资源，需要与 MAP.MKF 联合解析；tileset 预览尚未实现。',
-  'MAP.MKF': 'MAP.MKF 是场景地图数据，需要与 GOP.MKF 联合解析；地图解码器尚未实现。',
+  'GOP.MKF': 'GOP.MKF 是地图图块 sprite 包；地图页会按 SSS 场景记录与 MAP.MKF 联合读取。',
+  'MAP.MKF': 'MAP.MKF 是场景地图数据；地图页会按 SSS 场景记录与 GOP.MKF 联合读取。',
   'MGO.MKF': 'MGO.MKF 通常是场景角色与对象 sprite。',
   'MUS.MKF': 'MUS.MKF 是音乐资源；MIDI/RIX 播放器尚未实现。',
   'RGM.MKF': 'RGM.MKF 通常是角色头像等单张 RLE 图像。',
   'RNG.MKF': 'RNG.MKF 内部还有一层帧索引并保存增量动画；RNG 播放器尚未实现。',
   'SOUNDS.MKF': 'SOUNDS.MKF 是 WAVE 音效库；音频播放器尚未实现。',
-  'SSS.MKF': 'SSS.MKF 是场景、对象和脚本结构化数据；脚本解析器尚未实现。',
+  'SSS.MKF': 'SSS.MKF 的场景表和事件对象已接入地图页；完整脚本 opcode 解析仍未实现。',
 }
 
 function tryYj2(bytes: Uint8Array, heuristic = true): Uint8Array | null {
   if (heuristic && !looksLikeYj2(bytes)) return null
   try { return decompressYj2(bytes) } catch { return null }
+}
+
+export type DecompressedPalChunk = {
+  payload: Uint8Array
+  compression: ChunkInspection['compression']
+  notes: string[]
+}
+
+/**
+ * Applies archive-aware PAL compression rules without attempting to classify
+ * the decompressed payload. GOP is deliberately absent: SDLPAL reads GOP tile
+ * sprite packs directly while MAP and MGO are decompressed.
+ */
+export function decompressPalChunk(
+  raw: Uint8Array,
+  archiveName: string,
+  profile: GameProfile,
+): DecompressedPalChunk {
+  const normalizedName = archiveName.toUpperCase()
+  const notes: string[] = []
+  if (isYj1(raw)) {
+    return { payload: decompressYj1(raw), compression: 'YJ_1', notes }
+  }
+  if (profile === 'dos' || !COMPRESSED_ARCHIVES.has(normalizedName)) {
+    return { payload: raw, compression: 'none', notes }
+  }
+
+  const payload = tryYj2(raw, profile !== 'win95')
+  if (payload) return { payload, compression: 'YJ_2', notes }
+  if (profile === 'win95') notes.push('未能按 YJ_2 解压，改为检查原始 chunk')
+  return { payload: raw, compression: 'none', notes }
 }
 
 function findRle(bytes: Uint8Array): { image: IndexedImage; skipped: number } | null {
@@ -64,20 +95,9 @@ export function inspectChunk(
   const notes: string[] = []
   if (raw.length === 0) return { archiveName, chunkIndex, raw, payload: raw, compression: 'none', kind: 'empty', frames: [], notes: ['空 chunk'] }
 
-  let payload = raw
-  let compression: ChunkInspection['compression'] = 'none'
-  if (isYj1(raw)) {
-    payload = decompressYj1(raw)
-    compression = 'YJ_1'
-  } else if (profile === 'win95' || (profile === 'auto' && COMPRESSED_ARCHIVES.has(normalizedName))) {
-    const decompressed = tryYj2(raw, profile !== 'win95')
-    if (decompressed) {
-      payload = decompressed
-      compression = 'YJ_2'
-    } else if (profile === 'win95') {
-      notes.push('未能按 YJ_2 解压，改为检查原始 chunk')
-    }
-  }
+  const decoded = decompressPalChunk(raw, normalizedName, profile)
+  const { payload, compression } = decoded
+  notes.push(...decoded.notes)
 
   if (normalizedName === 'PAT.MKF') {
     try {

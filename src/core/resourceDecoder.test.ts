@@ -19,4 +19,9 @@ describe('resource inspection', () => {
     expect(result.kind).toBe('binary')
     expect(result.notes.join(' ')).toContain('地图数据')
   })
+
+  it('does not mistake a raw GOP sprite pack for YJ_2 data', () => {
+    const result = inspectChunk(new Uint8Array([8, 0, 0, 0, 1, 2, 3, 4]), 'GOP.MKF', 1, 'auto')
+    expect(result.compression).toBe('none')
+  })
 })
