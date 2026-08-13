@@ -262,6 +262,10 @@ export function getPalOpcodeDefinition(operation: number): PalOpcodeDefinition {
   }
 }
 
+export function listPalOpcodeDefinitions(): PalOpcodeDefinition[] {
+  return [...opcodeDefinitions.values()].sort((left, right) => left.operation - right.operation)
+}
+
 export function getPalScriptTargets(entry: PalScriptEntry): PalScriptTarget[] {
   return getPalOpcodeDefinition(entry.operation).targets.map((definition) => ({
     ...definition,

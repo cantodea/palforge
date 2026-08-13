@@ -1,5 +1,7 @@
 import {
   AppWindow,
+  ArrowDown,
+  ArrowUp,
   Archive,
   AlertTriangle,
   Blocks,
@@ -9,6 +11,7 @@ import {
   ChevronRight,
   CircleDot,
   Code2,
+  CopyPlus,
   Download,
   FileCode2,
   FileImage,
@@ -30,6 +33,7 @@ import {
   Settings2,
   SquareMousePointer,
   TerminalSquare,
+  Trash2,
   Undo2,
   ZoomIn,
   ZoomOut,
@@ -56,11 +60,27 @@ import {
   formatPalWord,
   getPalOpcodeDefinition,
   getPalScriptTargets,
+  listPalOpcodeDefinitions,
   parsePalEntryInput,
   tracePalScript,
   type PalScriptEntry,
   type PalScriptReference,
 } from './core/script'
+import {
+  compileForgeScriptProject,
+  createForgeScriptDraft,
+  getTargetDefinition,
+  insertForgeScriptCommand,
+  isForgeScriptDraftCompatible,
+  moveForgeScriptCommand,
+  parseForgeScriptDrafts,
+  removeForgeScriptCommand,
+  setForgeScriptTarget,
+  updateForgeScriptCommand,
+  updateForgeScriptMessage,
+  type CompiledForgeScript,
+  type ForgeScriptDraft,
+} from './core/scriptProject'
 import { createTestSnapshot, type TestSnapshot } from './core/tester'
 import { demoMap, demoModules, demoScripts } from './data/demo'
 import type {
@@ -149,6 +169,7 @@ function ProjectExplorer({
   realScriptReferences,
   selectedRealScriptEntry,
   onRealScript,
+  editedScriptEntries,
 }: {
   view: View
   onView: (view: View) => void
@@ -161,6 +182,7 @@ function ProjectExplorer({
   realScriptReferences: PalScriptReference[]
   selectedRealScriptEntry: number | null
   onRealScript: (entry: number) => void
+  editedScriptEntries: number[]
 }) {
   return (
     <aside className="explorer panel">
@@ -213,6 +235,7 @@ function ProjectExplorer({
               >
                 <FileCode2 size={14} />
                 <span>{reference.sources[0].label}{reference.sources.length > 1 ? ` +${reference.sources.length - 1}` : ''}</span>
+                {editedScriptEntries.includes(reference.entry) && <i className="dirty-dot" title="工程脚本已修改" />}
                 <code>{formatPalEntry(reference.entry)}</code>
               </button>
             )) : <button className="tree-item muted-item"><FileCode2 size={14} /><span>当前场景没有脚本入口</span></button>
@@ -279,7 +302,7 @@ function TopBar({
       <div className="brand">
         <span className="brand-mark"><Hammer size={17} /></span>
         <strong>PalForge</strong>
-        <span className="version">ALPHA 0.4</span>
+        <span className="version">ALPHA 0.5</span>
       </div>
       <div className="breadcrumb">
         <FolderOpen size={14} />
@@ -535,7 +558,15 @@ function RealScriptEditor({
   messages,
   messageEncoding,
   messageError,
+  draft,
+  compiledDraft,
   onEntry,
+  onCreateDraft,
+  onDraftChange,
+  onDiscardDraft,
+  canUndo,
+  onUndo,
+  sourceMismatch,
 }: {
   entries: PalScriptEntry[]
   startEntry: number
@@ -543,18 +574,43 @@ function RealScriptEditor({
   messages: string[]
   messageEncoding: PalSceneCatalog['messageEncoding']
   messageError?: string
+  draft?: ForgeScriptDraft
+  compiledDraft?: CompiledForgeScript
   onEntry: (entry: number) => void
+  onCreateDraft: () => void
+  onDraftChange: (draft: ForgeScriptDraft) => void
+  onDiscardDraft: () => void
+  canUndo: boolean
+  onUndo: () => void
+  sourceMismatch: boolean
 }) {
   const [entryInput, setEntryInput] = useState(formatPalWord(startEntry))
+  const [selectedCommandId, setSelectedCommandId] = useState<string | null>(null)
   useEffect(() => setEntryInput(formatPalWord(startEntry)), [startEntry])
+  useEffect(() => {
+    setSelectedCommandId((current) => draft?.commands.some((command) => command.id === current) ? current : draft?.commands[0]?.id ?? null)
+  }, [draft, startEntry])
   const trace = useMemo(() => tracePalScript(entries, startEntry), [entries, startEntry])
   const origin = references.find((reference) => reference.entry === startEntry)
   const unknownCount = trace.entries.filter((entry) => getPalOpcodeDefinition(entry.operation).category === 'unknown').length
   const jumpCount = trace.entries.reduce((count, entry) => count + getPalScriptTargets(entry).filter((item) => item.entry > 0).length, 0)
+  const selectedCommand = draft?.commands.find((command) => command.id === selectedCommandId)
+  const selectedDefinition = selectedCommand ? getPalOpcodeDefinition(selectedCommand.operation) : undefined
+  const compiledById = compiledDraft?.addressByCommandId ?? {}
+  const compiledEntryByAddress = new globalThis.Map(compiledDraft?.entries.map((entry) => [entry.index, entry]) ?? [])
+  const selectedCompiledEntry = selectedCommand ? compiledEntryByAddress.get(compiledById[selectedCommand.id]) : undefined
+  const opcodeDefinitions = useMemo(() => listPalOpcodeDefinitions(), [])
 
   const submitEntry = () => {
     const parsed = parsePalEntryInput(entryInput)
     if (parsed !== null) onEntry(parsed)
+  }
+
+  const changeOperand = (operand: 0 | 1 | 2, value: number) => {
+    if (!draft || !selectedCommand || !Number.isFinite(value)) return
+    const operands = [...selectedCommand.operands] as [number, number, number]
+    operands[operand] = Math.max(0, Math.min(0xffff, Math.trunc(value)))
+    onDraftChange(updateForgeScriptCommand(draft, selectedCommand.id, { operands }))
   }
 
   return (
@@ -564,23 +620,56 @@ function RealScriptEditor({
           <span className="view-icon violet"><Braces size={18} /></span>
           <div>
             <strong>事件脚本 {formatPalEntry(startEntry)}</strong>
-            <small>{origin ? origin.sources.map((source) => source.label).join(' · ') : '手动地址'} · {trace.entries.length} 条可达指令</small>
+            <small>{origin ? origin.sources.map((source) => source.label).join(' · ') : '手动地址'} · {draft ? `${draft.commands.length} 条工程指令` : `${trace.entries.length} 条可达指令`}</small>
           </div>
         </div>
         <div className="script-entry-picker">
-          <span className="readonly-pill">SSS.MKF #4 · 只读</span>
+          <span className={draft ? 'forge-edit-pill' : 'readonly-pill'}>{draft ? 'FORGE 工程覆盖' : 'SSS.MKF #4 · 只读'}</span>
           <label>入口
             <input value={entryInput} onChange={(event) => setEntryInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submitEntry() }} aria-label="脚本入口地址" />
           </label>
           <button className="toolbar-button" onClick={submitEntry}><Search size={14} /> 定位</button>
+          {draft
+            ? <><button className="toolbar-button" disabled={!canUndo} onClick={onUndo}><Undo2 size={14} /> 撤销一步</button><button className="toolbar-button danger-button" onClick={onDiscardDraft}><Trash2 size={14} /> 放弃覆盖</button></>
+            : <button className="primary-button" disabled={trace.entries.length === 0} onClick={onCreateDraft}><CopyPlus size={14} /> 克隆到工程</button>}
         </div>
       </div>
       <div className="script-layout">
         <div className="script-flow">
-          <div className="flow-start"><Play size={13} fill="currentColor" /> 入口 {formatPalEntry(startEntry)}</div>
-          {trace.entries.length === 0 ? (
+          <div className="flow-start"><Play size={13} fill="currentColor" /> {draft ? `编译入口 ${formatPalEntry(compiledDraft?.compiledEntry ?? entries.length)}` : `入口 ${formatPalEntry(startEntry)}`}</div>
+          {draft && sourceMismatch && <div className="source-mismatch-warning"><AlertTriangle size={14} /><span><strong>基础脚本不匹配</strong>这个工程覆盖来自另一份或另一版本的 SSS.MKF；请核对后重新克隆，避免把修改应用到错误资源。</span></div>}
+          {!draft && trace.entries.length === 0 ? (
             <div className="script-empty-state"><AlertTriangle size={24} /><strong>脚本入口无效</strong><p>{trace.issues[0] ?? 'SSS.MKF #4 中没有这个地址。'}</p></div>
-          ) : trace.entries.map((entry) => {
+          ) : draft ? draft.commands.map((command, index) => {
+            const definition = getPalOpcodeDefinition(command.operation)
+            const compiledAddress = compiledById[command.id]
+            const compiledEntry = compiledEntryByAddress.get(compiledAddress)
+            return (
+              <div className={`command-card editable ${scriptCategoryClass({ index: compiledAddress ?? 0, operation: command.operation, operands: command.operands })} ${selectedCommandId === command.id ? 'selected' : ''}`} key={command.id} onClick={() => setSelectedCommandId(command.id)}>
+                <div className="command-index">
+                  <b>{compiledAddress === undefined ? '—' : formatPalEntry(compiledAddress)}</b>
+                  <small>{command.sourceIndex === null ? 'NEW' : `原 ${formatPalEntry(command.sourceIndex)}`}</small>
+                </div>
+                <div className="command-main">
+                  <span><b>{definition.label}</b><code>{formatPalWord(command.operation)}</code><i>{definition.category}</i></span>
+                  <p className={command.message ? 'dialogue-preview' : ''}>{command.message?.text || definition.description}</p>
+                  <div className="operand-row">
+                    {(compiledEntry?.operands ?? command.operands).map((operand, operandIndex) => <code key={operandIndex}>P{operandIndex} {formatPalWord(operand)}</code>)}
+                  </div>
+                  {command.targetLinks.length > 0 && <div className="script-target-row">{command.targetLinks.map((link) => (
+                    <button key={link.operand} onClick={(event) => { event.stopPropagation(); setSelectedCommandId(link.commandId) }}>
+                      P{link.operand} → {compiledById[link.commandId] === undefined ? '已删除' : formatPalEntry(compiledById[link.commandId])}
+                    </button>
+                  ))}</div>}
+                </div>
+                <div className="command-actions">
+                  <button className="icon-button" disabled={index === 0} title="上移" onClick={(event) => { event.stopPropagation(); onDraftChange(moveForgeScriptCommand(draft, command.id, -1)) }}><ArrowUp size={13} /></button>
+                  <button className="icon-button" disabled={index === draft.commands.length - 1} title="下移" onClick={(event) => { event.stopPropagation(); onDraftChange(moveForgeScriptCommand(draft, command.id, 1)) }}><ArrowDown size={13} /></button>
+                  <button className="icon-button danger-icon" title="删除" onClick={(event) => { event.stopPropagation(); onDraftChange(removeForgeScriptCommand(draft, command.id)) }}><Trash2 size={13} /></button>
+                </div>
+              </div>
+            )
+          }) : trace.entries.map((entry) => {
             const definition = getPalOpcodeDefinition(entry.operation)
             const targets = getPalScriptTargets(entry)
             const message = entry.operation === 0xffff ? messages[entry.operands[0]] : undefined
@@ -610,18 +699,56 @@ function RealScriptEditor({
               </div>
             )
           })}
+          {draft && <button className="flow-add labeled" onClick={() => {
+            const updated = insertForgeScriptCommand(draft, selectedCommandId)
+            onDraftChange(updated)
+            const currentIndex = updated.commands.findIndex((command) => command.id === selectedCommandId)
+            setSelectedCommandId(updated.commands[currentIndex + 1]?.id ?? updated.commands.at(-1)?.id ?? null)
+          }}><PackagePlus size={13} /> 在选中指令后添加</button>}
         </div>
-        <aside className="opcode-panel">
-          <span className="eyebrow">RAW SCRIPT ENTRIES</span>
-          <pre>{trace.entries.map((entry) => `${formatPalEntry(entry.index)}  ${formatPalWord(entry.operation)}  ${entry.operands.map(formatPalWord).join('  ')}`).join('\n')}</pre>
-          {messageEncoding && <div className="message-status">M.MSG · {messageEncoding.toUpperCase()} · {messages.length} 条文本</div>}
-          {!messageEncoding && !messageError && <div className="message-status">M.MSG 未挂载 · 文本指令仅显示消息编号</div>}
-          {messageError && <div className="script-issues"><span><AlertTriangle size={12} />M.MSG：{messageError}</span></div>}
-          {trace.issues.length > 0 && <div className="script-issues">{trace.issues.map((issue) => <span key={issue}><AlertTriangle size={12} />{issue}</span>)}</div>}
-          <div className={`compile-status ${unknownCount > 0 || trace.issues.length > 0 ? 'warning' : ''}`}>
-            <span className="status-light" /> {jumpCount} 个显式引用 · {unknownCount} 个未知 opcode · 未执行
-          </div>
-        </aside>
+        {draft ? (
+          <aside className="opcode-panel script-property-panel">
+            <span className="eyebrow">COMMAND INSPECTOR</span>
+            {selectedCommand && selectedDefinition ? <>
+              <div className="selected-command-meta"><strong>{selectedCommand.id}</strong><code>{selectedCommand.sourceIndex === null ? '工程新增' : `来源 ${formatPalEntry(selectedCommand.sourceIndex)}`}</code></div>
+              <label className="field"><span>指令 / opcode</span><select value={selectedCommand.operation} onChange={(event) => onDraftChange(updateForgeScriptCommand(draft, selectedCommand.id, { operation: Number(event.target.value) }))}>
+                {getPalOpcodeDefinition(selectedCommand.operation).category === 'unknown' && <option value={selectedCommand.operation}>{formatPalWord(selectedCommand.operation)} · 未识别</option>}
+                {opcodeDefinitions.map((definition) => <option key={definition.operation} value={definition.operation}>{formatPalWord(definition.operation)} · {definition.label}</option>)}
+              </select></label>
+              <label className="field"><span>自定义 opcode 数值</span><input type="number" min="0" max="65535" value={selectedCommand.operation} onChange={(event) => {
+                const operation = Math.max(0, Math.min(0xffff, Math.trunc(Number(event.target.value))))
+                if (Number.isFinite(operation)) onDraftChange(updateForgeScriptCommand(draft, selectedCommand.id, { operation }))
+              }} /></label>
+              <div className="property-operands">{([0, 1, 2] as const).map((operand) => {
+                const targetDefinition = getTargetDefinition(selectedCommand.operation, operand)
+                const link = selectedCommand.targetLinks.find((item) => item.operand === operand)
+                return <div className="operand-editor" key={operand}>
+                  <label className="field"><span>P{operand}{targetDefinition ? ` · ${targetDefinition.label}` : ''}</span><input type="number" min="0" max="65535" value={selectedCommand.operands[operand]} onChange={(event) => changeOperand(operand, Number(event.target.value))} /></label>
+                  {targetDefinition && <label className="field target-field"><span>符号目标</span><select value={link?.commandId ?? ''} onChange={(event) => onDraftChange(setForgeScriptTarget(draft, selectedCommand.id, operand, event.target.value || null))}>
+                    <option value="">外部地址 / 原始数值</option>
+                    {draft.commands.map((command) => <option key={command.id} value={command.id}>{compiledById[command.id] === undefined ? '—' : formatPalEntry(compiledById[command.id])} · {getPalOpcodeDefinition(command.operation).label}</option>)}
+                  </select></label>}
+                </div>
+              })}</div>
+              {selectedCommand.operation === 0xffff && <label className="field dialogue-editor"><span>对白文本 · 工程覆盖</span><textarea value={selectedCommand.message?.text ?? ''} onChange={(event) => onDraftChange(updateForgeScriptMessage(draft, selectedCommand.id, event.target.value))} placeholder="输入新的对白文本…" /></label>}
+              <div className="compiled-command"><span className="eyebrow">COMPILED COMMAND</span><pre>{selectedCompiledEntry ? `${formatPalEntry(selectedCompiledEntry.index)}  ${formatPalWord(selectedCompiledEntry.operation)}\n${selectedCompiledEntry.operands.map((operand, index) => `P${index}  ${formatPalWord(operand)}`).join('\n')}` : '等待编译地址'}</pre></div>
+            </> : <div className="script-empty-state compact"><strong>选择一条指令</strong></div>}
+            {compiledDraft && compiledDraft.issues.length > 0 && <div className="script-issues">{compiledDraft.issues.map((issue, index) => <span key={`${issue.code}:${index}`}><AlertTriangle size={12} />{issue.message}</span>)}</div>}
+            <div className={`compile-status ${compiledDraft?.issues.some((issue) => issue.level === 'error') ? 'warning' : ''}`}><span className="status-light" /> 追加式编译 · 原 SSS.MKF 未修改</div>
+          </aside>
+        ) : (
+          <aside className="opcode-panel">
+            <span className="eyebrow">RAW SCRIPT ENTRIES</span>
+            <pre>{trace.entries.map((entry) => `${formatPalEntry(entry.index)}  ${formatPalWord(entry.operation)}  ${entry.operands.map(formatPalWord).join('  ')}`).join('\n')}</pre>
+            {messageEncoding && <div className="message-status">M.MSG · {messageEncoding.toUpperCase()} · {messages.length} 条文本</div>}
+            {!messageEncoding && !messageError && <div className="message-status">M.MSG 未挂载 · 文本指令仅显示消息编号</div>}
+            {messageError && <div className="script-issues"><span><AlertTriangle size={12} />M.MSG：{messageError}</span></div>}
+            {trace.issues.length > 0 && <div className="script-issues">{trace.issues.map((issue) => <span key={issue}><AlertTriangle size={12} />{issue}</span>)}</div>}
+            <div className={`compile-status ${unknownCount > 0 || trace.issues.length > 0 ? 'warning' : ''}`}>
+              <span className="status-light" /> {jumpCount} 个显式引用 · {unknownCount} 个未知 opcode · 未执行
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   )
@@ -686,6 +813,16 @@ function TestBench({
   )
 }
 
+function loadStoredScriptDrafts(): ForgeScriptDraft[] {
+  try {
+    const stored = globalThis.localStorage?.getItem('palforge.project')
+    if (!stored) return []
+    return parseForgeScriptDrafts(JSON.parse(stored).scriptDrafts)
+  } catch {
+    return []
+  }
+}
+
 export default function App() {
   const [view, setView] = useState<View>('map')
   const [map, setMap] = useState<SceneMap>(() => structuredClone(demoMap))
@@ -703,6 +840,8 @@ export default function App() {
   const [selectedEventId, setSelectedEventId] = useState('event-01')
   const [selectedScriptId, setSelectedScriptId] = useState('script-0042')
   const [selectedRealScriptEntry, setSelectedRealScriptEntry] = useState<number | null>(null)
+  const [scriptDrafts, setScriptDrafts] = useState<ForgeScriptDraft[]>(loadStoredScriptDrafts)
+  const [scriptDraftHistory, setScriptDraftHistory] = useState<Record<string, ForgeScriptDraft[]>>({})
   const [zoom, setZoom] = useState(0.85)
   const [showGrid, setShowGrid] = useState(true)
   const [resources, setResources] = useState<ImportedResource[]>([])
@@ -735,6 +874,18 @@ export default function App() {
     [loadedScene],
   )
   const mapPalette = useMemo(() => palettes.find((palette) => `${palette.index}:${palette.variant}` === mapPaletteKey), [mapPaletteKey, palettes])
+  const compiledScriptProject = useMemo(
+    () => compileForgeScriptProject(
+      scriptDrafts,
+      sceneCatalog?.scriptEntries.length ?? 0,
+      sceneCatalog?.messageEncoding ? sceneCatalog.messages.length : null,
+    ),
+    [scriptDrafts, sceneCatalog],
+  )
+  const activeScriptDraft = scriptDrafts.find((draft) => draft.sourceEntry === selectedRealScriptEntry)
+  const activeCompiledScript = compiledScriptProject.scripts.find((script) => script.sourceEntry === selectedRealScriptEntry)
+  const activeDraftHistory = selectedRealScriptEntry === null ? [] : scriptDraftHistory[String(selectedRealScriptEntry)] ?? []
+  const activeDraftSourceMismatch = Boolean(activeScriptDraft && sceneCatalog && !isForgeScriptDraftCompatible(activeScriptDraft, sceneCatalog.scriptEntries))
   const sceneTitle = loadedScene
     ? `场景 #${String(loadedScene.record.number).padStart(3, '0')} · 地图 #${String(loadedScene.record.mapNumber).padStart(3, '0')}`
     : '十里坡 · 原型场景'
@@ -847,12 +998,25 @@ export default function App() {
   }
 
   const saveProject = () => {
-    localStorage.setItem('palforge.project', JSON.stringify({ map, modules, testSettings }))
-    setToast('工程快照已保存到浏览器')
+    localStorage.setItem('palforge.project', JSON.stringify({ format: 'palforge-project', version: 2, map, modules, testSettings, scriptDrafts }))
+    setToast(`工程快照已保存 · ${scriptDrafts.length} 个脚本覆盖`)
   }
 
   const exportProject = () => {
-    const payload = JSON.stringify({ format: 'palforge-project', version: 1, map, modules, testSettings, resources: resources.map(({ name, path, size, kind, chunks }) => ({ name, path, size, kind, chunks })) }, null, 2)
+    const payload = JSON.stringify({
+      format: 'palforge-project',
+      version: 2,
+      map,
+      modules,
+      testSettings,
+      scriptProject: {
+        format: 'palforge-script-project',
+        version: 1,
+        drafts: scriptDrafts,
+        compiledPreview: compiledScriptProject,
+      },
+      resources: resources.map(({ name, path, size, kind, chunks }) => ({ name, path, size, kind, chunks })),
+    }, null, 2)
     const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }))
     const link = document.createElement('a')
     link.href = url
@@ -891,6 +1055,7 @@ export default function App() {
         realScriptReferences={realScriptReferences}
         selectedRealScriptEntry={selectedRealScriptEntry}
         onRealScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }}
+        editedScriptEntries={scriptDrafts.map((draft) => draft.sourceEntry)}
       />
       <main className={`main-area ${testOpen && !projectMounted ? 'test-open' : ''}`}>
         {view === 'map' && (
@@ -946,7 +1111,46 @@ export default function App() {
               messages={sceneCatalog.messages}
               messageEncoding={sceneCatalog.messageEncoding}
               messageError={sceneCatalog.messageError}
+              draft={activeScriptDraft}
+              compiledDraft={activeCompiledScript}
               onEntry={setSelectedRealScriptEntry}
+              onCreateDraft={() => {
+                const created = createForgeScriptDraft(
+                  sceneCatalog.scriptEntries,
+                  selectedRealScriptEntry ?? 0,
+                  realScriptReferences.find((reference) => reference.entry === selectedRealScriptEntry)?.sources[0]?.label,
+                  Date.now(),
+                  sceneCatalog.messages,
+                )
+                setScriptDrafts((current) => [...current.filter((draft) => draft.sourceEntry !== created.sourceEntry), created])
+                setScriptDraftHistory((current) => ({ ...current, [String(created.sourceEntry)]: [] }))
+                setToast(`已创建工程脚本 ${formatPalEntry(created.sourceEntry)}`)
+              }}
+              onDraftChange={(updated) => {
+                const previous = scriptDrafts.find((draft) => draft.sourceEntry === updated.sourceEntry)
+                if (previous) setScriptDraftHistory((current) => ({
+                  ...current,
+                  [String(updated.sourceEntry)]: [...(current[String(updated.sourceEntry)] ?? []), previous].slice(-50),
+                }))
+                setScriptDrafts((current) => current.map((draft) => draft.sourceEntry === updated.sourceEntry ? updated : draft))
+              }}
+              onDiscardDraft={() => {
+                setScriptDrafts((current) => current.filter((draft) => draft.sourceEntry !== selectedRealScriptEntry))
+                setScriptDraftHistory((current) => {
+                  const next = { ...current }
+                  delete next[String(selectedRealScriptEntry)]
+                  return next
+                })
+                setToast(`已放弃 ${formatPalEntry(selectedRealScriptEntry ?? 0)} 的工程覆盖`)
+              }}
+              canUndo={activeDraftHistory.length > 0}
+              onUndo={() => {
+                const previous = activeDraftHistory.at(-1)
+                if (!previous) return
+                setScriptDrafts((current) => current.map((draft) => draft.sourceEntry === previous.sourceEntry ? previous : draft))
+                setScriptDraftHistory((current) => ({ ...current, [String(previous.sourceEntry)]: (current[String(previous.sourceEntry)] ?? []).slice(0, -1) }))
+              }}
+              sourceMismatch={activeDraftSourceMismatch}
             />
           : <ScriptEditor script={selectedScript} />)}
         {view === 'resources' && <ResourceBrowser resources={resources} palettes={palettes} selectedPath={selectedResourcePath} profile={gameProfile} onProfile={setGameProfile} onSelectResource={setSelectedResourcePath} onImport={() => assetInputRef.current?.click()} onOpenDirectory={() => gameInputRef.current?.click()} onToast={setToast} />}
