@@ -12,7 +12,7 @@
 
 | 层 | 职责 | 当前状态 |
 |---|---|---|
-| Format adapters | 读取 MKF、YJ_1、RLE、PAT、MAP 与脚本二进制格式 | MKF index 已实现 |
+| Format adapters | 读取 MKF、YJ_1/YJ_2、sprite/RLE、PAT、FBP、MAP 与脚本二进制格式 | 只读图像资源链路已实现；MAP/脚本待开发 |
 | Domain model | 场景、单元、事件、脚本、资源引用、项目差异 | 原型已实现 |
 | Editor features | 地图、脚本、资源、模块、检查器 | 原型已实现 |
 | Project codec | `.palforge.json` / 后续压缩工程包的读写与迁移 | JSON 导出已实现 |
@@ -65,5 +65,4 @@ module://fishing-demo/audio/bite.ogg
 
 ## 6. 接下来最值得先做的工作
 
-`Resource Lens` 应先补齐只读链路：MKF chunk → 压缩探测 → YJ_1 解压 → RLE/PAT 解码 → Canvas 预览。确认多个游戏数据版本都能稳定读取后，再实现写回和 Runner Bridge。
-
+`Resource Lens` 的只读链路已经实现：MKF chunk → YJ_1/YJ_2 解压 → sprite/RLE/FBP/PAT 解码 → Canvas 预览。下一步应使用多个合法游戏数据版本做兼容性验证，再实现 MAP 场景读取、写回和 Runner Bridge。

@@ -2,7 +2,6 @@ import {
   AppWindow,
   Archive,
   Blocks,
-  Box,
   Braces,
   BugPlay,
   ChevronDown,
@@ -12,14 +11,10 @@ import {
   Download,
   FileCode2,
   FileImage,
-  FileMusic,
-  FileUp,
-  Folder,
   FolderOpen,
   Gamepad2,
   Grid3X3,
   Hammer,
-  ImagePlus,
   Layers3,
   Map,
   MousePointer2,
@@ -31,7 +26,6 @@ import {
   Save,
   Search,
   Settings2,
-  Sparkles,
   SquareMousePointer,
   TerminalSquare,
   Undo2,
@@ -40,13 +34,17 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { MapCanvas } from './components/MapCanvas'
-import { formatBytes, parseMkfIndex } from './core/mkf'
+import { ResourceBrowser } from './components/ResourceBrowser'
+import { readMkfChunk, readMkfIndex } from './core/mkf'
+import { decodePatChunk } from './core/palette'
+import type { GameProfile } from './core/resourceDecoder'
 import { createTestSnapshot, type TestSnapshot } from './core/tester'
 import { demoMap, demoModules, demoScripts } from './data/demo'
 import type {
   ForgeModule,
   ImportedResource,
   MapEvent,
+  PalPalette,
   SceneMap,
   Script,
   TerrainKind,
@@ -72,13 +70,6 @@ const terrainLabels: Record<TerrainKind, string> = {
   stone: '岩地',
   flower: '花丛',
 }
-
-const builtinResources: ImportedResource[] = [
-  { name: 'MAP.MKF', path: '/game/MAP.MKF', size: 1449984, kind: 'mkf', chunks: 0 },
-  { name: 'MGO.MKF', path: '/game/MGO.MKF', size: 5242880, kind: 'mkf', chunks: 0 },
-  { name: 'PAT.MKF', path: '/game/PAT.MKF', size: 4096, kind: 'mkf', chunks: 0 },
-  { name: 'DATA.MKF', path: '/game/DATA.MKF', size: 91392, kind: 'mkf', chunks: 0 },
-]
 
 function RailButton({
   active,
@@ -206,7 +197,9 @@ function ProjectExplorer({
       </div>
       <div className="explorer-footer">
         <span className="status-light" />
-        演示工程 · 尚未挂载游戏目录
+        {resources.some((item) => item.file && !item.path.startsWith('forge://'))
+          ? '本地游戏目录 · 只读模式'
+          : '演示工程 · 尚未挂载游戏目录'}
       </div>
     </aside>
   )
@@ -228,7 +221,7 @@ function TopBar({
       <div className="brand">
         <span className="brand-mark"><Hammer size={17} /></span>
         <strong>PalForge</strong>
-        <span className="version">ALPHA 0.1</span>
+        <span className="version">ALPHA 0.2</span>
       </div>
       <div className="breadcrumb">
         <FolderOpen size={14} />
@@ -378,32 +371,6 @@ function ScriptEditor({ script }: { script: Script }) {
   )
 }
 
-function ResourcesView({ resources, onImport }: { resources: ImportedResource[]; onImport: () => void }) {
-  return (
-    <div className="workspace-view resources-view">
-      <div className="view-titlebar">
-        <div><span className="view-icon cyan"><Archive size={18} /></span><div><strong>资源仓库</strong><small>原版 MKF 与扩展资源使用独立命名空间</small></div></div>
-        <button className="primary-button" onClick={onImport}><ImagePlus size={15} /> 导入扩展资源</button>
-      </div>
-      <div className="resource-banner"><Sparkles size={19} /><div><strong>额外美术不会挤占原版资源编号</strong><p>PalForge 使用 <code>forge://</code> 命名空间保存 PNG、WebP、WAV 等新资源，导出时再由运行时桥接。</p></div></div>
-      <div className="resource-table-header"><span>资源</span><span>类型</span><span>分块 / 大小</span><span>来源</span></div>
-      <div className="resource-list">
-        {resources.map((resource) => (
-          <div className="resource-row" key={resource.path}>
-            <div className="resource-name">
-              <span className={`file-kind ${resource.kind}`}>{resource.previewUrl ? <img src={resource.previewUrl} alt="" /> : resource.kind === 'mkf' ? <Archive size={17} /> : resource.kind === 'image' ? <FileImage size={17} /> : resource.kind === 'audio' ? <FileMusic size={17} /> : <Box size={17} />}</span>
-              <span><strong>{resource.name}</strong><small>{resource.path}</small></span>
-            </div>
-            <span className="resource-type">{resource.kind.toUpperCase()}</span>
-            <span>{resource.chunks !== undefined && resource.chunks > 0 ? `${resource.chunks} chunks` : formatBytes(resource.size)}</span>
-            <span className={resource.path.startsWith('forge://') ? 'forge-source' : ''}>{resource.path.startsWith('forge://') ? '扩展工程' : '游戏目录'}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 function ModulesView({ modules, onToggle }: { modules: ForgeModule[]; onToggle: (id: string) => void }) {
   return (
     <div className="workspace-view modules-view">
@@ -473,7 +440,10 @@ export default function App() {
   const [selectedScriptId, setSelectedScriptId] = useState('script-0042')
   const [zoom, setZoom] = useState(0.85)
   const [showGrid, setShowGrid] = useState(true)
-  const [resources, setResources] = useState<ImportedResource[]>(builtinResources)
+  const [resources, setResources] = useState<ImportedResource[]>([])
+  const [palettes, setPalettes] = useState<PalPalette[]>([])
+  const [selectedResourcePath, setSelectedResourcePath] = useState('')
+  const [gameProfile, setGameProfile] = useState<GameProfile>('auto')
   const [modules, setModules] = useState<ForgeModule[]>(demoModules)
   const [projectMounted, setProjectMounted] = useState(false)
   const [testOpen, setTestOpen] = useState(true)
@@ -502,14 +472,42 @@ export default function App() {
     const imported = await Promise.all(files.map(async (file) => {
       const kind = resourceKind(file)
       let chunks: number | undefined
+      let chunkIndex: ImportedResource['chunkIndex']
+      let error: string | undefined
       if (kind === 'mkf') {
-        try { chunks = parseMkfIndex(await file.arrayBuffer()).length } catch { chunks = undefined }
+        try {
+          chunkIndex = await readMkfIndex(file)
+          chunks = chunkIndex.length
+        } catch (reason) {
+          error = reason instanceof Error ? reason.message : String(reason)
+        }
       }
       const relativePath = file.webkitRelativePath || file.name
-      return { name: file.name, path: asGameDirectory ? `/${relativePath}` : `forge://assets/${file.name}`, size: file.size, kind, chunks, previewUrl: !asGameDirectory && kind === 'image' ? URL.createObjectURL(file) : undefined } satisfies ImportedResource
+      return { name: file.name, path: asGameDirectory ? `/${relativePath}` : `forge://assets/${file.name}`, size: file.size, kind, chunks, chunkIndex, file, error, previewUrl: !asGameDirectory && kind === 'image' ? URL.createObjectURL(file) : undefined } satisfies ImportedResource
     }))
     setResources(asGameDirectory ? imported : (current) => [...current, ...imported])
-    if (asGameDirectory) setProjectMounted(true)
+    if (asGameDirectory) {
+      setProjectMounted(true)
+      const preferred = imported.find((item) => item.name.toUpperCase() === 'MGO.MKF')
+        ?? imported.find((item) => item.name.toUpperCase() === 'FBP.MKF')
+        ?? imported.find((item) => item.kind === 'mkf')
+      setSelectedResourcePath(preferred?.path ?? '')
+
+      const pat = imported.find((item) => item.name.toUpperCase() === 'PAT.MKF' && item.file && item.chunkIndex)
+      if (pat?.file && pat.chunkIndex) {
+        const loaded: PalPalette[] = []
+        for (const chunk of pat.chunkIndex) {
+          if (chunk.size < 768) continue
+          try {
+            const buffer = await pat.file.slice(chunk.offset, chunk.offset + chunk.size).arrayBuffer()
+            loaded.push(...decodePatChunk(readMkfChunk(buffer, { ...chunk, offset: 0 }), chunk.index))
+          } catch { /* keep other palettes */ }
+        }
+        setPalettes(loaded)
+      } else {
+        setPalettes([])
+      }
+    }
     setView('resources')
     setToast(asGameDirectory ? `已挂载 ${imported.length} 个文件` : `已导入 ${imported.length} 个扩展资源`)
   }
@@ -520,7 +518,7 @@ export default function App() {
   }
 
   const exportProject = () => {
-    const payload = JSON.stringify({ format: 'palforge-project', version: 1, map, modules, testSettings, resources: resources.map(({ previewUrl: _previewUrl, ...resource }) => resource) }, null, 2)
+    const payload = JSON.stringify({ format: 'palforge-project', version: 1, map, modules, testSettings, resources: resources.map(({ name, path, size, kind, chunks }) => ({ name, path, size, kind, chunks })) }, null, 2)
     const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }))
     const link = document.createElement('a')
     link.href = url
@@ -554,11 +552,11 @@ export default function App() {
           </div>
         )}
         {view === 'script' && <ScriptEditor script={selectedScript} />}
-        {view === 'resources' && <ResourcesView resources={resources} onImport={() => assetInputRef.current?.click()} />}
+        {view === 'resources' && <ResourceBrowser resources={resources} palettes={palettes} selectedPath={selectedResourcePath} profile={gameProfile} onProfile={setGameProfile} onSelectResource={setSelectedResourcePath} onImport={() => assetInputRef.current?.click()} onOpenDirectory={() => gameInputRef.current?.click()} onToast={setToast} />}
         {view === 'modules' && <ModulesView modules={modules} onToggle={(id) => setModules((current) => current.map((module) => module.id === id ? { ...module, enabled: !module.enabled } : module))} />}
       </main>
       {view === 'map' && <Inspector map={map} selectedTile={selectedTile} selectedEvent={selectedEvent} onEventChange={updateEvent} />}
-      <TestBench open={testOpen} onOpen={() => setTestOpen((value) => !value)} settings={testSettings} onSettings={setTestSettings} events={map.events} onRun={() => { const event = map.events.find((item) => item.id === testSettings.eventId); setSnapshot(createTestSnapshot(testSettings, event)); setToast('独立测试快照已建立') }} snapshot={snapshot} />
+      {view === 'map' && <TestBench open={testOpen} onOpen={() => setTestOpen((value) => !value)} settings={testSettings} onSettings={setTestSettings} events={map.events} onRun={() => { const event = map.events.find((item) => item.id === testSettings.eventId); setSnapshot(createTestSnapshot(testSettings, event)); setToast('独立测试快照已建立') }} snapshot={snapshot} />}
       {toast && <div className="toast"><CircleDot size={14} />{toast}</div>}
       <footer className="statusbar"><span><span className="status-light" /> PalForge project</span><span>UTF-8</span><span>SDLPAL classic profile</span><span className="status-spacer" /><span>Ln {selectedTile.y + 1}, Col {selectedTile.x + 1}</span><span>main*</span></footer>
     </div>

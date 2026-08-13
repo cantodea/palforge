@@ -46,7 +46,30 @@ export type ImportedResource = {
   size: number
   kind: 'mkf' | 'image' | 'audio' | 'data' | 'other'
   chunks?: number
+  chunkIndex?: import('./core/mkf').MkfChunk[]
+  file?: File
+  error?: string
   previewUrl?: string
+}
+
+export type PaletteColor = {
+  r: number
+  g: number
+  b: number
+  a: number
+}
+
+export type PalPalette = {
+  index: number
+  variant: 'day' | 'night'
+  colors: PaletteColor[]
+}
+
+export type IndexedImage = {
+  width: number
+  height: number
+  pixels: Uint8Array
+  alpha: Uint8Array
 }
 
 export type ForgeModule = {
@@ -66,4 +89,3 @@ export type TestSettings = {
   eventId: string
   flags: string[]
 }
-

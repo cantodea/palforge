@@ -1,0 +1,16 @@
+import { describe, expect, it } from 'vitest'
+import { inspectChunk } from './resourceDecoder'
+
+describe('resource inspection', () => {
+  it('recognizes a direct RLE chunk', () => {
+    const result = inspectChunk(new Uint8Array([2, 0, 1, 0, 2, 4, 5]), 'RGM.MKF', 0, 'auto')
+    expect(result.kind).toBe('rle')
+    expect(Array.from(result.image!.pixels)).toEqual([4, 5])
+  })
+
+  it('recognizes a PAT palette chunk', () => {
+    const result = inspectChunk(new Uint8Array(768), 'PAT.MKF', 0, 'auto')
+    expect(result.kind).toBe('palette')
+    expect(result.palettes).toHaveLength(1)
+  })
+})
