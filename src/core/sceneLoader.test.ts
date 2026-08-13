@@ -33,19 +33,26 @@ describe('PAL scene loader', () => {
     writeU16(sceneBytes, 8, 2)
     writeU16(sceneBytes, 14, 1)
 
+    const scriptBytes = new Uint8Array(0x43 * 8)
+    writeU16(scriptBytes, 0x42 * 8, 0x0053)
+    const messageOffsets = new Uint8Array(8)
+    writeU16(messageOffsets, 4, 5)
+
     const mapBytes = new Uint8Array(PAL_MAP_BYTE_LENGTH)
     const onePixelSprite = new Uint8Array([2, 0, 5, 0, 1, 0, 1, 0, 1, 7])
     const archives: PalArchiveSet = new Map([
-      ['SSS.MKF', source('SSS.MKF', [eventBytes, sceneBytes])],
+      ['SSS.MKF', source('SSS.MKF', [eventBytes, sceneBytes, new Uint8Array(), messageOffsets, scriptBytes])],
       ['MAP.MKF', source('MAP.MKF', [new Uint8Array(), mapBytes])],
       ['GOP.MKF', source('GOP.MKF', [new Uint8Array(), onePixelSprite])],
       ['MGO.MKF', source('MGO.MKF', [new Uint8Array(), onePixelSprite])],
     ])
 
-    const catalog = await loadPalSceneCatalog(archives)
+    const catalog = await loadPalSceneCatalog(archives, new File(['hello'], 'M.MSG'))
     const loaded = await loadPalScene(archives, catalog, 1, 'dos')
 
     expect(catalog.availableScenes.map((scene) => scene.number)).toEqual([1])
+    expect(catalog.scriptEntries[0x42]).toMatchObject({ index: 0x42, operation: 0x0053 })
+    expect(catalog.messages).toEqual(['hello'])
     expect(loaded.record).toMatchObject({ number: 1, mapNumber: 1, scriptOnEnter: 0x42 })
     expect(loaded.map.tiles[0][0][0].bottomFrame).toBe(0)
     expect(loaded.tileset[0].image.pixels[0]).toBe(7)

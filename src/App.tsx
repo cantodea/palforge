@@ -50,6 +50,17 @@ import {
   type PalArchiveSet,
   type PalSceneCatalog,
 } from './core/sceneLoader'
+import {
+  collectSceneScriptReferences,
+  formatPalEntry,
+  formatPalWord,
+  getPalOpcodeDefinition,
+  getPalScriptTargets,
+  parsePalEntryInput,
+  tracePalScript,
+  type PalScriptEntry,
+  type PalScriptReference,
+} from './core/script'
 import { createTestSnapshot, type TestSnapshot } from './core/tester'
 import { demoMap, demoModules, demoScripts } from './data/demo'
 import type {
@@ -135,6 +146,9 @@ function ProjectExplorer({
   sceneCatalog,
   selectedSceneNumber,
   onScene,
+  realScriptReferences,
+  selectedRealScriptEntry,
+  onRealScript,
 }: {
   view: View
   onView: (view: View) => void
@@ -144,6 +158,9 @@ function ProjectExplorer({
   sceneCatalog: PalSceneCatalog | null
   selectedSceneNumber: number | null
   onScene: (sceneNumber: number) => void
+  realScriptReferences: PalScriptReference[]
+  selectedRealScriptEntry: number | null
+  onRealScript: (entry: number) => void
 }) {
   return (
     <aside className="explorer panel">
@@ -185,8 +202,21 @@ function ProjectExplorer({
             </>
           )}
         </Section>
-        <Section title="事件脚本" count={demoScripts.length}>
-          {demoScripts.map((script) => (
+        <Section title={sceneCatalog ? '当前场景脚本' : '事件脚本'} count={sceneCatalog ? realScriptReferences.length : demoScripts.length}>
+          {sceneCatalog ? (
+            realScriptReferences.length > 0 ? realScriptReferences.map((reference) => (
+              <button
+                key={reference.entry}
+                className={`tree-item ${view === 'script' && selectedRealScriptEntry === reference.entry ? 'selected' : ''}`}
+                onClick={() => onRealScript(reference.entry)}
+                title={reference.sources.map((source) => source.label).join('\n')}
+              >
+                <FileCode2 size={14} />
+                <span>{reference.sources[0].label}{reference.sources.length > 1 ? ` +${reference.sources.length - 1}` : ''}</span>
+                <code>{formatPalEntry(reference.entry)}</code>
+              </button>
+            )) : <button className="tree-item muted-item"><FileCode2 size={14} /><span>当前场景没有脚本入口</span></button>
+          ) : demoScripts.map((script) => (
             <button
               key={script.id}
               className={`tree-item ${view === 'script' && selectedScriptId === script.id ? 'selected' : ''}`}
@@ -249,7 +279,7 @@ function TopBar({
       <div className="brand">
         <span className="brand-mark"><Hammer size={17} /></span>
         <strong>PalForge</strong>
-        <span className="version">ALPHA 0.3</span>
+        <span className="version">ALPHA 0.4</span>
       </div>
       <div className="breadcrumb">
         <FolderOpen size={14} />
@@ -395,10 +425,12 @@ function PalSceneInspector({
   scene,
   selectedTile,
   selectedEvent,
+  onOpenScript,
 }: {
   scene: LoadedPalScene
   selectedTile: PalTileSelection
   selectedEvent?: LoadedPalEvent
+  onOpenScript: (entry: number) => void
 }) {
   const tile = scene.map.tiles[selectedTile.y][selectedTile.x][selectedTile.half]
   const triggerLabel = (mode: number) => {
@@ -425,11 +457,15 @@ function PalSceneInspector({
           </div>
           <label className="field"><span>状态 / 层级</span><input value={`${selectedEvent.object.state} / ${selectedEvent.object.layer}`} readOnly /></label>
           <label className="field"><span>触发方式</span><input value={triggerLabel(selectedEvent.object.triggerMode)} readOnly /></label>
-          <label className="field"><span>触发脚本</span><input value={`0x${selectedEvent.object.triggerScript.toString(16).padStart(4, '0')}`} readOnly /></label>
-          <label className="field"><span>自动脚本</span><input value={`0x${selectedEvent.object.autoScript.toString(16).padStart(4, '0')}`} readOnly /></label>
+          <label className="field"><span>触发脚本</span><input value={formatPalEntry(selectedEvent.object.triggerScript)} readOnly /></label>
+          <label className="field"><span>自动脚本</span><input value={formatPalEntry(selectedEvent.object.autoScript)} readOnly /></label>
           <div className="field-row">
             <label className="field"><span>方向</span><input value={selectedEvent.object.direction} readOnly /></label>
             <label className="field"><span>当前帧</span><input value={`${selectedEvent.object.currentFrame} / ${selectedEvent.frames.length}`} readOnly /></label>
+          </div>
+          <div className="script-entry-actions">
+            <button className="wide-button" disabled={selectedEvent.object.triggerScript === 0} onClick={() => onOpenScript(selectedEvent.object.triggerScript)}><Code2 size={14} /> 打开触发脚本</button>
+            <button className="wide-button" disabled={selectedEvent.object.autoScript === 0} onClick={() => onOpenScript(selectedEvent.object.autoScript)}><Code2 size={14} /> 打开自动脚本</button>
           </div>
           {selectedEvent.error && <div className="scene-warning"><AlertTriangle size={14} />{selectedEvent.error}</div>}
         </div>
@@ -446,6 +482,10 @@ function PalSceneInspector({
           <div className="meta-list">
             <span><small>资源来源</small><code>MAP/GOP.MKF / #{scene.record.mapNumber}</code></span>
             <span><small>修改状态</small><b className="readonly-status">只读</b></span>
+          </div>
+          <div className="script-entry-actions">
+            <button className="wide-button" disabled={scene.record.scriptOnEnter === 0} onClick={() => onOpenScript(scene.record.scriptOnEnter)}><Code2 size={14} /> 场景进入 {formatPalEntry(scene.record.scriptOnEnter)}</button>
+            <button className="wide-button" disabled={scene.record.scriptOnTeleport === 0} onClick={() => onOpenScript(scene.record.scriptOnTeleport)}><Code2 size={14} /> 场景传送 {formatPalEntry(scene.record.scriptOnTeleport)}</button>
           </div>
         </div>
       )}
@@ -475,6 +515,113 @@ function ScriptEditor({ script }: { script: Script }) {
           <button className="flow-add" onClick={() => setCommands([...commands, { id: `cmd-${Date.now()}`, opcode: '0xFFFF', label: '显示对话', detail: '双击编辑新对话…', color: 'dialogue' }])}>＋</button>
         </div>
         <aside className="opcode-panel"><span className="eyebrow">COMPILED PREVIEW</span><pre>{commands.map((command, index) => `${String(index).padStart(4, '0')}  ${command.opcode}  ${command.detail}`).join('\n')}</pre><div className="compile-status"><span className="status-light" /> 指令结构有效</div></aside>
+      </div>
+    </div>
+  )
+}
+
+const scriptCategoryClass = (entry: PalScriptEntry) => {
+  const category = getPalOpcodeDefinition(entry.operation).category
+  if (category === 'battle') return 'battle'
+  if (category === 'flow' || category === 'inventory') return 'condition'
+  if (category === 'motion' || category === 'scene' || category === 'audio') return 'motion'
+  return category === 'unknown' ? 'unknown' : 'dialogue'
+}
+
+function RealScriptEditor({
+  entries,
+  startEntry,
+  references,
+  messages,
+  messageEncoding,
+  messageError,
+  onEntry,
+}: {
+  entries: PalScriptEntry[]
+  startEntry: number
+  references: PalScriptReference[]
+  messages: string[]
+  messageEncoding: PalSceneCatalog['messageEncoding']
+  messageError?: string
+  onEntry: (entry: number) => void
+}) {
+  const [entryInput, setEntryInput] = useState(formatPalWord(startEntry))
+  useEffect(() => setEntryInput(formatPalWord(startEntry)), [startEntry])
+  const trace = useMemo(() => tracePalScript(entries, startEntry), [entries, startEntry])
+  const origin = references.find((reference) => reference.entry === startEntry)
+  const unknownCount = trace.entries.filter((entry) => getPalOpcodeDefinition(entry.operation).category === 'unknown').length
+  const jumpCount = trace.entries.reduce((count, entry) => count + getPalScriptTargets(entry).filter((item) => item.entry > 0).length, 0)
+
+  const submitEntry = () => {
+    const parsed = parsePalEntryInput(entryInput)
+    if (parsed !== null) onEntry(parsed)
+  }
+
+  return (
+    <div className="workspace-view script-view real-script-view">
+      <div className="view-titlebar">
+        <div>
+          <span className="view-icon violet"><Braces size={18} /></span>
+          <div>
+            <strong>事件脚本 {formatPalEntry(startEntry)}</strong>
+            <small>{origin ? origin.sources.map((source) => source.label).join(' · ') : '手动地址'} · {trace.entries.length} 条可达指令</small>
+          </div>
+        </div>
+        <div className="script-entry-picker">
+          <span className="readonly-pill">SSS.MKF #4 · 只读</span>
+          <label>入口
+            <input value={entryInput} onChange={(event) => setEntryInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') submitEntry() }} aria-label="脚本入口地址" />
+          </label>
+          <button className="toolbar-button" onClick={submitEntry}><Search size={14} /> 定位</button>
+        </div>
+      </div>
+      <div className="script-layout">
+        <div className="script-flow">
+          <div className="flow-start"><Play size={13} fill="currentColor" /> 入口 {formatPalEntry(startEntry)}</div>
+          {trace.entries.length === 0 ? (
+            <div className="script-empty-state"><AlertTriangle size={24} /><strong>脚本入口无效</strong><p>{trace.issues[0] ?? 'SSS.MKF #4 中没有这个地址。'}</p></div>
+          ) : trace.entries.map((entry) => {
+            const definition = getPalOpcodeDefinition(entry.operation)
+            const targets = getPalScriptTargets(entry)
+            const message = entry.operation === 0xffff ? messages[entry.operands[0]] : undefined
+            return (
+              <div className={`command-card ${scriptCategoryClass(entry)}`} key={entry.index}>
+                <div className="command-index">{formatPalEntry(entry.index)}</div>
+                <div className="command-main">
+                  <span><b>{definition.label}</b><code>{formatPalWord(entry.operation)}</code><i>{definition.category}</i></span>
+                  <p className={message ? 'dialogue-preview' : ''}>{message || definition.description}</p>
+                  <div className="operand-row">
+                    {entry.operands.map((operand, index) => <code key={index}>P{index} {formatPalWord(operand)}</code>)}
+                  </div>
+                  {targets.length > 0 && <div className="script-target-row">
+                    {targets.map((destination) => (
+                      <button
+                        key={`${destination.operand}:${destination.kind}`}
+                        disabled={destination.entry === 0 || destination.entry >= entries.length}
+                        onClick={() => onEntry(destination.entry)}
+                        title={`操作数 ${destination.operand}`}
+                      >
+                        {destination.label} → {destination.entry === 0 ? 'NULL' : formatPalEntry(destination.entry)}
+                      </button>
+                    ))}
+                  </div>}
+                </div>
+                <button className="icon-button" title={`从 ${formatPalEntry(entry.index)} 作为入口查看`} onClick={() => onEntry(entry.index)}><ChevronRight size={14} /></button>
+              </div>
+            )
+          })}
+        </div>
+        <aside className="opcode-panel">
+          <span className="eyebrow">RAW SCRIPT ENTRIES</span>
+          <pre>{trace.entries.map((entry) => `${formatPalEntry(entry.index)}  ${formatPalWord(entry.operation)}  ${entry.operands.map(formatPalWord).join('  ')}`).join('\n')}</pre>
+          {messageEncoding && <div className="message-status">M.MSG · {messageEncoding.toUpperCase()} · {messages.length} 条文本</div>}
+          {!messageEncoding && !messageError && <div className="message-status">M.MSG 未挂载 · 文本指令仅显示消息编号</div>}
+          {messageError && <div className="script-issues"><span><AlertTriangle size={12} />M.MSG：{messageError}</span></div>}
+          {trace.issues.length > 0 && <div className="script-issues">{trace.issues.map((issue) => <span key={issue}><AlertTriangle size={12} />{issue}</span>)}</div>}
+          <div className={`compile-status ${unknownCount > 0 || trace.issues.length > 0 ? 'warning' : ''}`}>
+            <span className="status-light" /> {jumpCount} 个显式引用 · {unknownCount} 个未知 opcode · 未执行
+          </div>
+        </aside>
       </div>
     </div>
   )
@@ -555,6 +702,7 @@ export default function App() {
   const [selectedTile, setSelectedTile] = useState({ x: 7, y: 4 })
   const [selectedEventId, setSelectedEventId] = useState('event-01')
   const [selectedScriptId, setSelectedScriptId] = useState('script-0042')
+  const [selectedRealScriptEntry, setSelectedRealScriptEntry] = useState<number | null>(null)
   const [zoom, setZoom] = useState(0.85)
   const [showGrid, setShowGrid] = useState(true)
   const [resources, setResources] = useState<ImportedResource[]>([])
@@ -582,6 +730,10 @@ export default function App() {
   const selectedEvent = map.events.find((event) => event.id === selectedEventId)
   const selectedPalEvent = loadedScene?.events.find((event) => event.object.index === realSelectedEventIndex)
   const selectedScript = useMemo(() => demoScripts.find((script) => script.id === selectedScriptId) ?? demoScripts[0], [selectedScriptId])
+  const realScriptReferences = useMemo(
+    () => loadedScene ? collectSceneScriptReferences(loadedScene.record, loadedScene.events.map((event) => event.object)) : [],
+    [loadedScene],
+  )
   const mapPalette = useMemo(() => palettes.find((palette) => `${palette.index}:${palette.variant}` === mapPaletteKey), [mapPaletteKey, palettes])
   const sceneTitle = loadedScene
     ? `场景 #${String(loadedScene.record.number).padStart(3, '0')} · 地图 #${String(loadedScene.record.mapNumber).padStart(3, '0')}`
@@ -615,6 +767,8 @@ export default function App() {
       setSelectedSceneNumber(sceneNumber)
       setRealSelectedTile(focusTile)
       setRealSelectedEventIndex(focus?.object.index ?? null)
+      const scriptReferences = collectSceneScriptReferences(scene.record, scene.events.map((event) => event.object))
+      setSelectedRealScriptEntry(scriptReferences[0]?.entry ?? null)
       setTool('select')
       setZoom(0.5)
       setSnapshot(null)
@@ -676,7 +830,8 @@ export default function App() {
       setSceneCatalog(null)
       setSceneError('')
       try {
-        const nextCatalog = await loadPalSceneCatalog(nextArchives)
+        const messageFile = imported.find((item) => item.name.toUpperCase() === 'M.MSG')?.file
+        const nextCatalog = await loadPalSceneCatalog(nextArchives, messageFile)
         setSceneCatalog(nextCatalog)
         const firstScene = nextCatalog.availableScenes[0]
         await openRealScene(firstScene.number, nextArchives, nextCatalog, gameProfile)
@@ -715,7 +870,10 @@ export default function App() {
       <nav className="activity-rail">
         <div className="rail-main">
           <RailButton label="地图" active={view === 'map'} onClick={() => setView('map')}><Map size={20} /></RailButton>
-          <RailButton label="脚本" active={view === 'script'} onClick={() => setView('script')}><Braces size={20} /></RailButton>
+          <RailButton label="脚本" active={view === 'script'} onClick={() => {
+            if (sceneCatalog && selectedRealScriptEntry === null) setSelectedRealScriptEntry(realScriptReferences[0]?.entry ?? 0)
+            setView('script')
+          }}><Braces size={20} /></RailButton>
           <RailButton label="资源" active={view === 'resources'} onClick={() => setView('resources')}><Archive size={20} /></RailButton>
           <RailButton label="模块" active={view === 'modules'} onClick={() => setView('modules')}><Blocks size={20} /></RailButton>
         </div>
@@ -730,6 +888,9 @@ export default function App() {
         sceneCatalog={sceneCatalog}
         selectedSceneNumber={selectedSceneNumber}
         onScene={(sceneNumber) => void openRealScene(sceneNumber)}
+        realScriptReferences={realScriptReferences}
+        selectedRealScriptEntry={selectedRealScriptEntry}
+        onRealScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }}
       />
       <main className={`main-area ${testOpen && !projectMounted ? 'test-open' : ''}`}>
         {view === 'map' && (
@@ -777,11 +938,21 @@ export default function App() {
             </div>
           </div>
         )}
-        {view === 'script' && <ScriptEditor script={selectedScript} />}
+        {view === 'script' && (sceneCatalog
+          ? <RealScriptEditor
+              entries={sceneCatalog.scriptEntries}
+              startEntry={selectedRealScriptEntry ?? 0}
+              references={realScriptReferences}
+              messages={sceneCatalog.messages}
+              messageEncoding={sceneCatalog.messageEncoding}
+              messageError={sceneCatalog.messageError}
+              onEntry={setSelectedRealScriptEntry}
+            />
+          : <ScriptEditor script={selectedScript} />)}
         {view === 'resources' && <ResourceBrowser resources={resources} palettes={palettes} selectedPath={selectedResourcePath} profile={gameProfile} onProfile={setGameProfile} onSelectResource={setSelectedResourcePath} onImport={() => assetInputRef.current?.click()} onOpenDirectory={() => gameInputRef.current?.click()} onToast={setToast} />}
         {view === 'modules' && <ModulesView modules={modules} onToggle={(id) => setModules((current) => current.map((module) => module.id === id ? { ...module, enabled: !module.enabled } : module))} />}
       </main>
-      {view === 'map' && loadedScene && <PalSceneInspector scene={loadedScene} selectedTile={realSelectedTile} selectedEvent={selectedPalEvent} />}
+      {view === 'map' && loadedScene && <PalSceneInspector scene={loadedScene} selectedTile={realSelectedTile} selectedEvent={selectedPalEvent} onOpenScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }} />}
       {view === 'map' && !projectMounted && <Inspector map={map} selectedTile={selectedTile} selectedEvent={selectedEvent} onEventChange={updateEvent} />}
       {view === 'map' && !projectMounted && <TestBench open={testOpen} onOpen={() => setTestOpen((value) => !value)} settings={testSettings} onSettings={setTestSettings} events={map.events} onRun={() => { const event = map.events.find((item) => item.id === testSettings.eventId); setSnapshot(createTestSnapshot(testSettings, event)); setToast('独立测试快照已建立') }} snapshot={snapshot} />}
       {toast && <div className="toast"><CircleDot size={14} />{toast}</div>}

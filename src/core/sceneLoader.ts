@@ -1,5 +1,6 @@
 import type { ImportedResource } from '../types'
 import type { MkfChunk } from './mkf'
+import { parsePalMessageTable, type PalMessageEncoding } from './message'
 import { decompressPalChunk, type GameProfile } from './resourceDecoder'
 import {
   parsePalEventObjects,
@@ -10,6 +11,7 @@ import {
   type PalMapData,
   type PalSceneRecord,
 } from './scene'
+import { parsePalScriptEntries, type PalScriptEntry } from './script'
 import { decodeSprite, type SpriteFrame } from './sprite'
 
 export class PalSceneLoadError extends Error {
@@ -31,6 +33,10 @@ export type PalSceneCatalog = {
   scenes: PalSceneRecord[]
   availableScenes: PalSceneRecord[]
   eventObjects: PalEventObject[]
+  scriptEntries: PalScriptEntry[]
+  messages: string[]
+  messageEncoding: PalMessageEncoding | null
+  messageError?: string
 }
 
 export type LoadedPalEvent = {
@@ -76,11 +82,24 @@ async function readChunk(archive: PalArchiveSource, index: number): Promise<Uint
   return new Uint8Array(buffer)
 }
 
-export async function loadPalSceneCatalog(archives: PalArchiveSet): Promise<PalSceneCatalog> {
+export async function loadPalSceneCatalog(archives: PalArchiveSet, messageFile?: File): Promise<PalSceneCatalog> {
   const sss = requireArchive(archives, 'SSS.MKF')
-  const [eventBytes, sceneBytes] = await Promise.all([readChunk(sss, 0), readChunk(sss, 1)])
+  const [eventBytes, sceneBytes, messageOffsets, scriptBytes] = await Promise.all([readChunk(sss, 0), readChunk(sss, 1), readChunk(sss, 3), readChunk(sss, 4)])
   const scenes = parsePalSceneTable(sceneBytes)
   const eventObjects = parsePalEventObjects(eventBytes)
+  const scriptEntries = parsePalScriptEntries(scriptBytes)
+  let messages: string[] = []
+  let messageEncoding: PalMessageEncoding | null = null
+  let messageError: string | undefined
+  if (messageFile) {
+    try {
+      const table = parsePalMessageTable(messageOffsets, new Uint8Array(await messageFile.arrayBuffer()))
+      messages = table.messages
+      messageEncoding = table.encoding
+    } catch (error) {
+      messageError = error instanceof Error ? error.message : String(error)
+    }
+  }
   const mapCount = archives.get('MAP.MKF')?.chunks.length ?? Number.POSITIVE_INFINITY
   const gopCount = archives.get('GOP.MKF')?.chunks.length ?? Number.POSITIVE_INFINITY
 
@@ -93,7 +112,7 @@ export async function loadPalSceneCatalog(archives: PalArchiveSet): Promise<PalS
   if (availableScenes.length === 0) {
     throw new PalSceneLoadError('SSS.MKF 中没有找到可与 MAP/GOP 对应的场景')
   }
-  return { scenes, availableScenes, eventObjects }
+  return { scenes, availableScenes, eventObjects, scriptEntries, messages, messageEncoding, messageError }
 }
 
 function eventFrameIndex(object: PalEventObject): number {

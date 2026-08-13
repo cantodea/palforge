@@ -12,9 +12,9 @@
 
 | 层 | 职责 | 当前状态 |
 |---|---|---|
-| Format adapters | 读取 MKF、YJ_1/YJ_2、sprite/RLE、PAT、FBP、SSS 场景/事件与 MAP/GOP | 真实场景只读链路已实现；opcode 待开发 |
-| Domain model | 场景、单元、事件、脚本、资源引用、项目差异 | 原型与只读 PAL 场景模型已实现 |
-| Editor features | 地图、脚本、资源、模块、检查器 | 真实地图/事件查看和其余原型已实现 |
+| Format adapters | 读取 MKF、YJ_1/YJ_2、sprite/RLE、PAT、FBP、SSS 场景/事件/脚本与 MAP/GOP | 真实场景和脚本只读链路已实现 |
+| Domain model | 场景、单元、事件、脚本、资源引用、项目差异 | 只读 PAL 场景、脚本入口和静态流程已实现 |
+| Editor features | 地图、脚本、资源、模块、检查器 | 真实地图/事件/脚本查看和其余原型已实现 |
 | Project codec | `.palforge.json` / 后续压缩工程包的读写与迁移 | JSON 导出已实现 |
 | Runner bridge | 从工程快照生成临时游戏副本并启动 SDLPAL | 快照模型已实现，进程桥接待开发 |
 | Module SDK | 注册编辑页、事件、资源、存档字段和测试目标 | manifest 模型已实现 |
@@ -65,4 +65,4 @@ module://fishing-demo/audio/bite.ogg
 
 ## 6. 接下来最值得先做的工作
 
-`Scene Lens` 的只读链路已经实现：SSS 场景表 → MAP/YJ 解压 → GOP 图块 → SSS 事件范围 → MGO 精灵 → PAT Canvas。下一步应使用 DOS 与 Win95 的合法游戏数据做兼容性验证，再把修改保存为 PalForge 差异并仅向游戏副本导出。
+`Scene Lens` 与 `Script Lens` 的只读链路已经实现：SSS 场景表 → MAP/YJ 解压 → GOP 图块 → SSS 事件范围 → MGO 精灵 → PAT Canvas，以及 SSS 脚本表 → opcode 注册表 → 场景/事件入口 → 静态可达流。下一步应使用 DOS 与 Win95 的合法游戏数据做兼容性验证，再把地图、事件和脚本修改保存为 PalForge 差异并仅向游戏副本导出。
