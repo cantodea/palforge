@@ -40,7 +40,6 @@ export function decodeRle(bytes: Uint8Array): IndexedImage {
     const command = bytes[source++]
     if ((command & 0x80) !== 0 && command <= 0x80 + width) {
       const transparent = command - 0x80
-      if (transparent === 0) throw new RleFormatError('RLE 包含零长度透明游程')
       destination += transparent
       if (destination > total) throw new RleFormatError('RLE 透明游程越过图像边界')
       continue

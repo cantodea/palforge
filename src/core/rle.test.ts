@@ -10,6 +10,11 @@ describe('PAL RLE images', () => {
     expect(Array.from(image.alpha)).toEqual([255, 255, 0, 255, 255, 255])
   })
 
+  it('accepts the engine-compatible 0x80 zero-length transparent command', () => {
+    const bytes = new Uint8Array([1, 0, 1, 0, 0x80, 1, 7])
+    expect(Array.from(decodeRle(bytes).pixels)).toEqual([7])
+  })
+
   it('applies palette colors without making palette index zero implicitly transparent', () => {
     const image = decodeRle(new Uint8Array([1, 0, 1, 0, 1, 0]))
     const colors = Array.from({ length: 256 }, (_, value) => ({ r: value, g: 0, b: 0, a: 255 }))

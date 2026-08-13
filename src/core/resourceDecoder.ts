@@ -24,8 +24,8 @@ export type ChunkInspection = {
 
 const COMPRESSED_ARCHIVES = new Set(['ABC.MKF', 'F.MKF', 'FBP.MKF', 'FIRE.MKF', 'GOP.MKF', 'MAP.MKF', 'MGO.MKF'])
 
-function tryYj2(bytes: Uint8Array): Uint8Array | null {
-  if (!looksLikeYj2(bytes)) return null
+function tryYj2(bytes: Uint8Array, heuristic = true): Uint8Array | null {
+  if (heuristic && !looksLikeYj2(bytes)) return null
   try { return decompressYj2(bytes) } catch { return null }
 }
 
@@ -54,7 +54,7 @@ export function inspectChunk(
     payload = decompressYj1(raw)
     compression = 'YJ_1'
   } else if (profile === 'win95' || (profile === 'auto' && COMPRESSED_ARCHIVES.has(normalizedName))) {
-    const decompressed = tryYj2(raw)
+    const decompressed = tryYj2(raw, profile !== 'win95')
     if (decompressed) {
       payload = decompressed
       compression = 'YJ_2'
