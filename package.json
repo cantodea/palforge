@@ -1,0 +1,26 @@
+{
+  "name": "palforge",
+  "private": true,
+  "version": "0.8.0",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "test": "vitest run",
+    "check": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.5",
+    "typescript": "~5.7.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}
