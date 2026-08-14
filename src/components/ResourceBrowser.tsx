@@ -1,12 +1,16 @@
 import {
   Archive,
+  BookOpenText,
   ChevronLeft,
   ChevronRight,
+  Code2,
   Download,
   FileDown,
   FileWarning,
   Image as ImageIcon,
+  Link2,
   LoaderCircle,
+  MapPinned,
   Moon,
   Palette,
   Pause,
@@ -14,6 +18,7 @@ import {
   Repeat2,
   RotateCcw,
   ScanSearch,
+  Search,
   SlidersHorizontal,
   Sun,
 } from 'lucide-react'
@@ -22,6 +27,15 @@ import { formatBytes, readMkfChunk, type MkfChunk } from '../core/mkf'
 import { adjustPalette, blendPalettes, grayscalePalette } from '../core/palette'
 import { indexedToRgba } from '../core/rle'
 import { inspectChunk, type ChunkInspection, type GameProfile } from '../core/resourceDecoder'
+import {
+  buildResourceSemanticIndex,
+  describeResourceChunk,
+  getArchiveSemantic,
+  normalizeArchiveName,
+  resourceChunkKey,
+  type ChunkSemantic,
+} from '../core/resourceSemantics'
+import type { PalSceneCatalog } from '../core/sceneLoader'
 import type { ImportedResource, PalPalette } from '../types'
 
 type ResourceBrowserProps = {
@@ -33,8 +47,13 @@ type ResourceBrowserProps = {
   onSelectResource: (path: string) => void
   onImport: () => void
   onOpenDirectory: () => void
+  sceneCatalog: PalSceneCatalog | null
+  onOpenScene: (sceneNumber: number, eventObjectIndex?: number) => void
+  onOpenScript: (entry: number) => void
   onToast: (message: string) => void
 }
+
+type SemanticFilter = 'all' | 'referenced' | 'unresolved'
 
 const kindLabels: Record<ChunkInspection['kind'], string> = {
   sprite: 'SPRITE',
@@ -92,11 +111,21 @@ function PaletteGrid({ palette }: { palette: PalPalette }) {
 
 function ChunkList({
   chunks,
+  semantics,
   selected,
+  query,
+  filter,
+  onQuery,
+  onFilter,
   onSelect,
 }: {
   chunks: MkfChunk[]
+  semantics: Map<number, ChunkSemantic>
   selected: number
+  query: string
+  filter: SemanticFilter
+  onQuery: (query: string) => void
+  onFilter: (filter: SemanticFilter) => void
   onSelect: (chunk: MkfChunk) => void
 }) {
   return (
@@ -105,18 +134,30 @@ function ChunkList({
         <span>CHUNKS</span>
         <b>{chunks.length}</b>
       </div>
+      <label className="chunk-search"><Search size={13} /><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="编号、场景、脚本…" /></label>
+      <div className="chunk-filters">
+        <button className={filter === 'all' ? 'active' : ''} onClick={() => onFilter('all')}>全部</button>
+        <button className={filter === 'referenced' ? 'active' : ''} onClick={() => onFilter('referenced')}>有引用</button>
+        <button className={filter === 'unresolved' ? 'active' : ''} onClick={() => onFilter('unresolved')}>待辨认</button>
+      </div>
       <div className="chunk-list">
-        {chunks.map((chunk) => (
-          <button
-            key={chunk.index}
-            className={chunk.index === selected ? 'active' : ''}
-            onClick={() => onSelect(chunk)}
-            disabled={chunk.size === 0}
-          >
-            <span><b>#{String(chunk.index).padStart(4, '0')}</b><small>0x{chunk.offset.toString(16).padStart(8, '0')}</small></span>
-            <em>{chunk.size === 0 ? 'EMPTY' : formatBytes(chunk.size)}</em>
-          </button>
-        ))}
+        {chunks.length > 0 ? chunks.map((chunk) => {
+          const semantic = semantics.get(chunk.index)
+          return (
+            <button
+              key={chunk.index}
+              className={chunk.index === selected ? 'active' : ''}
+              onClick={() => onSelect(chunk)}
+              disabled={chunk.size === 0}
+            >
+              <span className="chunk-main">
+                <span><b>#{String(chunk.index).padStart(4, '0')}</b>{semantic && <i>{semantic.title}</i>}</span>
+                <small>0x{chunk.offset.toString(16).padStart(8, '0')}</small>
+              </span>
+              <span className="chunk-meta"><em>{chunk.size === 0 ? 'EMPTY' : formatBytes(chunk.size)}</em>{semantic && semantic.references.length > 0 && <small><Link2 size={9} />{semantic.references.length}</small>}</span>
+            </button>
+          )
+        }) : <div className="chunk-list-empty"><ScanSearch size={20} /><span>没有符合搜索条件的 chunk</span></div>}
       </div>
     </div>
   )
@@ -131,6 +172,9 @@ export function ResourceBrowser({
   onSelectResource,
   onImport,
   onOpenDirectory,
+  sceneCatalog,
+  onOpenScene,
+  onOpenScript,
   onToast,
 }: ResourceBrowserProps) {
   const selected = resources.find((resource) => resource.path === selectedPath) ?? resources.find((resource) => resource.kind === 'mkf')
@@ -147,7 +191,34 @@ export function ResourceBrowser({
   const [contrast, setContrast] = useState(100)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+  const [semanticFilter, setSemanticFilter] = useState<SemanticFilter>('all')
   const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  const referenceIndex = useMemo(() => buildResourceSemanticIndex(sceneCatalog), [sceneCatalog])
+  const archiveSemantic = getArchiveSemantic(selected?.name ?? '')
+  const chunkSemantics = useMemo(() => new Map(
+    (selected?.chunkIndex ?? []).map((chunk) => [chunk.index, describeResourceChunk(selected?.name ?? '', chunk.index, referenceIndex)]),
+  ), [referenceIndex, selected?.chunkIndex, selected?.name])
+  const filteredChunks = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase()
+    return (selected?.chunkIndex ?? []).filter((chunk) => {
+      const semantic = chunkSemantics.get(chunk.index)
+      if (!semantic) return !normalizedQuery
+      if (semanticFilter === 'referenced' && semantic.references.length === 0) return false
+      if (semanticFilter === 'unresolved' && semantic.references.length > 0) return false
+      return !normalizedQuery || semantic.searchText.includes(normalizedQuery)
+    })
+  }, [chunkSemantics, query, selected?.chunkIndex, semanticFilter])
+  const selectedSemantic = selectedChunk >= 0 ? chunkSemantics.get(selectedChunk) : undefined
+  const archiveReferenceCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const [key, references] of referenceIndex) {
+      const archiveName = key.slice(0, key.indexOf('#'))
+      counts.set(archiveName, (counts.get(archiveName) ?? 0) + references.length)
+    }
+    return counts
+  }, [referenceIndex])
 
   const availablePalettes = useMemo(() => {
     const own = inspection?.palettes ?? []
@@ -187,6 +258,8 @@ export function ResourceBrowser({
     setFrame(0)
     setPlaying(false)
     setSelectedChunk(-1)
+    setQuery('')
+    setSemanticFilter('all')
   }, [selected?.path])
 
   useEffect(() => {
@@ -280,7 +353,7 @@ export function ResourceBrowser({
   return (
     <div className="workspace-view resources-view real-resource-view">
       <div className="view-titlebar resource-titlebar">
-        <div><span className="view-icon cyan"><Archive size={18} /></span><div><strong>真实资源浏览器</strong><small>MKF → YJ → sprite/RLE → PAT 调色板</small></div></div>
+        <div><span className="view-icon cyan"><Archive size={18} /></span><div><strong>真实资源浏览器</strong><small>解码预览 · 场景/事件/脚本用途索引 · 原文件只读</small></div></div>
         <div className="resource-actions">
           <label className="profile-select"><span>游戏格式</span><select value={profile} onChange={(event) => onProfile(event.target.value as GameProfile)}><option value="auto">自动识别</option><option value="dos">DOS / YJ_1</option><option value="win95">Win95 / YJ_2</option></select></label>
           <button className="toolbar-button" onClick={onImport}>导入扩展资源</button>
@@ -291,16 +364,18 @@ export function ResourceBrowser({
         <div className="archive-column">
           <div className="resource-column-title"><span>ARCHIVES</span><b>{resources.filter((item) => item.kind === 'mkf').length}</b></div>
           <div className="archive-list">
-            {resources.filter((item) => item.kind === 'mkf').map((resource) => (
-              <button key={resource.path} className={resource.path === selected?.path ? 'active' : ''} onClick={() => onSelectResource(resource.path)}>
+            {resources.filter((item) => item.kind === 'mkf').map((resource) => {
+              const semantic = getArchiveSemantic(resource.name)
+              const referenceCount = archiveReferenceCounts.get(normalizeArchiveName(resource.name)) ?? 0
+              return <button key={resource.path} className={resource.path === selected?.path ? 'active' : ''} onClick={() => onSelectResource(resource.path)}>
                 <span className="archive-icon"><Archive size={16} /></span>
-                <span><strong>{resource.name}</strong><small>{resource.error ?? `${resource.chunkIndex?.length ?? 0} chunks · ${formatBytes(resource.size)}`}</small></span>
+                <span><strong>{resource.name}</strong><small>{semantic.title}</small><em>{resource.error ?? `${resource.chunkIndex?.length ?? 0} chunks · ${referenceCount} 处引用 · ${formatBytes(resource.size)}`}</em></span>
               </button>
-            ))}
+            })}
           </div>
         </div>
 
-        <ChunkList chunks={selected?.chunkIndex ?? []} selected={selectedChunk} onSelect={(chunk) => void openChunk(chunk)} />
+        <ChunkList chunks={filteredChunks} semantics={chunkSemantics} selected={selectedChunk} query={query} filter={semanticFilter} onQuery={setQuery} onFilter={setSemanticFilter} onSelect={(chunk) => void openChunk(chunk)} />
 
         <div className="preview-column">
           <div className="preview-toolbar">
@@ -310,6 +385,12 @@ export function ResourceBrowser({
               {inspection && inspection.payload !== inspection.raw && <button className="icon-button" title="导出解压数据" onClick={() => { downloadBytes(inspection.payload, `${inspection.archiveName}-${inspection.chunkIndex}.decoded.bin`); onToast('解压数据已导出') }}><Download size={15} /></button>}
               {image && <button className="primary-button" onClick={exportPng}><ImageIcon size={14} /> 导出 PNG</button>}
             </div>
+          </div>
+
+          <div className="archive-semantic-banner">
+            <span><BookOpenText size={16} /></span>
+            <div><strong>{archiveSemantic.title}</strong><p>{archiveSemantic.description}</p></div>
+            <i className={archiveSemantic.indexed ? 'connected' : ''}>{archiveSemantic.indexed ? '用途索引已连接' : '类型说明'}</i>
           </div>
 
           <div className="preview-stage">
@@ -322,14 +403,31 @@ export function ResourceBrowser({
             {!loading && image && <div className="image-preview-shell"><div className="image-checker"><canvas ref={canvasRef} /></div><span>{image.width} × {image.height} · 8-bit indexed</span></div>}
           </div>
 
-          {inspection && (
+          {(inspection || selectedSemantic) && (
             <div className="decode-details">
-              <div className="decode-summary">
+              {selectedSemantic && <section className="resource-semantic-details">
+                <header>
+                  <span><Link2 size={15} /></span>
+                  <div><strong>{selectedSemantic.title}</strong><small>{selectedSemantic.summary}</small><code>{selectedSemantic.uri}</code></div>
+                  <i className={selectedSemantic.confidence}>{selectedSemantic.confidence === 'exact' ? '自动推断 · 精确关联' : '待补充语义'}</i>
+                </header>
+                {selectedSemantic.references.length > 0
+                  ? <div className="resource-reference-list">{selectedSemantic.references.map((reference) => (
+                    <button key={reference.id} onClick={() => reference.kind === 'script' && reference.scriptEntry !== undefined ? onOpenScript(reference.scriptEntry) : reference.sceneNumber !== undefined ? onOpenScene(reference.sceneNumber, reference.eventObjectIndex) : undefined}>
+                      <span>{reference.kind === 'script' ? <Code2 size={13} /> : <MapPinned size={13} />}</span>
+                      <span><strong>{reference.label}</strong><small>{reference.detail}</small></span>
+                      <em>打开</em>
+                    </button>
+                  ))}</div>
+                  : <p className="resource-reference-empty">没有发现引用不等于废弃：资源仍可能由引擎硬编码、未识别的数据表或不可达脚本使用。</p>}
+              </section>}
+
+              {inspection && <div className="decode-summary">
                 <div className="decode-badges"><span>{inspection.compression}</span><span>{kindLabels[inspection.kind]}</span><span>{formatBytes(inspection.raw.length)} → {formatBytes(inspection.payload.length)}</span></div>
                 {inspection.notes.length > 0 && <div className="decode-notes">{inspection.notes.map((note) => <span key={note}>{note}</span>)}</div>}
-              </div>
+              </div>}
 
-              {(image || inspection.kind === 'palette') && (
+              {inspection && (image || inspection.kind === 'palette') && (
                 <div className={`resource-tool-grid ${inspection.kind === 'sprite' ? 'with-player' : ''}`}>
                   <section className="resource-tool-card palette-workbench">
                     <header>

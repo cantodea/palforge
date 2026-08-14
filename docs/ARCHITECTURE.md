@@ -13,8 +13,8 @@
 | 层 | 职责 | 当前状态 |
 |---|---|---|
 | Format adapters | 读取 MKF、YJ_1/YJ_2、sprite/RLE、PAT、FBP、SSS 场景/事件/脚本与 MAP/GOP | 真实场景和脚本只读链路已实现 |
-| Domain model | 场景、单元、事件、脚本、动画、资源引用、项目差异 | PAL 场景、工程脚本、工程动画与场景调试快照已实现 |
-| Editor features | 地图、脚本、资源、动画、模块、检查器 | 真实地图/事件查看、工程脚本、Animation Forge 和场景内调试已实现 |
+| Domain model | 场景、单元、事件、脚本、动画、资源引用、项目差异 | PAL 场景、工程脚本、工程动画、资源语义索引与场景调试快照已实现 |
+| Editor features | 地图、脚本、资源、动画、模块、检查器 | 真实地图/事件查看、原版资源引用检索、工程脚本、Animation Forge 和场景内调试已实现 |
 | Project codec | `.palforge.json` / 后续压缩工程包的读写与迁移 | version 3 JSON 可保存脚本草稿、编译预览和工程动画 |
 | Runner bridge | 把本地资源复制到隔离文件系统并启动 SDLPAL | 浏览器 WASM 场景直达已实现；工程补丁注入与原生进程待开发 |
 | Module SDK | 注册编辑页、事件、资源、存档字段和测试目标 | manifest 模型已实现 |
@@ -41,6 +41,8 @@ module://fishing-demo/audio/bite.ogg
 | `module://` | 扩展模块 | 按 manifest 管理 | 模块私有资源 |
 
 Animation Forge 导入图片时只把像素写入 `project://animations/{id}` 的工程帧。原版条目只作为 `pal://` 引用显示；即使未来从原版帧派生新动画，也会保留 `source.originalUri` 并把修改后的像素存入工程层，不覆写源 chunk。
+
+资源浏览器的语义索引同样不修改原版归档。`resourceSemantics.ts` 从当前挂载目录已经解析出的场景、事件与脚本模型生成反向引用：场景地图号关联 `MAP/GOP`，事件精灵号关联 `MGO`，已知资源操作码关联 `MGO/RNG/FBP`。索引使用 `pal://archives/{archive}/chunks/{index}` 作为稳定键；“未发现引用”只说明当前关系表没有命中，不能据此删除原始 chunk。
 
 ## 4. 动画工程格式
 

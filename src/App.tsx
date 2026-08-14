@@ -1228,6 +1228,7 @@ export default function App() {
     sourceArchives = archives,
     sourceCatalog = sceneCatalog,
     profile = gameProfile,
+    focusEventObjectIndex?: number,
   ) => {
     if (!sourceCatalog) return
     const token = ++sceneLoadTokenRef.current
@@ -1237,18 +1238,21 @@ export default function App() {
     try {
       const scene = await loadPalScene(sourceArchives, sourceCatalog, sceneNumber, profile)
       if (token !== sceneLoadTokenRef.current) return
-      const focus = scene.events.find((event) => event.object.state > 0) ?? scene.events[0]
+      const requestedFocus = focusEventObjectIndex === undefined
+        ? undefined
+        : scene.events.find((event) => event.object.index === focusEventObjectIndex)
+      const focus = requestedFocus ?? scene.events.find((event) => event.object.state > 0) ?? scene.events[0]
       const half = focus && focus.object.x % 32 >= 16 ? 1 : 0
       const focusTile: PalTileSelection = focus ? {
         x: Math.max(0, Math.min(63, Math.floor((focus.object.x - half * 16) / 32))),
         y: Math.max(0, Math.min(127, Math.floor((focus.object.y - half * 8) / 16))),
         half,
       } : { x: 0, y: 0, half: 0 }
-      const safeFocusTile = findSafeSdlpalSpawn(scene.map, scene.events.map((event) => event.object), focusTile) ?? focusTile
+      const safeFocusTile = requestedFocus ? focusTile : findSafeSdlpalSpawn(scene.map, scene.events.map((event) => event.object), focusTile) ?? focusTile
       setLoadedScene(scene)
       setSelectedSceneNumber(sceneNumber)
       setRealSelectedTile(safeFocusTile)
-      setRealSelectedEventIndex(null)
+      setRealSelectedEventIndex(requestedFocus?.object.index ?? null)
       const scriptReferences = collectSceneScriptReferences(scene.record, scene.events.map((event) => event.object))
       setSelectedRealScriptEntry(scriptReferences[0]?.entry ?? null)
       setTool('select')
@@ -1257,7 +1261,9 @@ export default function App() {
       setSceneDebugSession(null)
       setSceneDebugRunning(false)
       setSdlpalLaunchTarget(null)
-      setToast(`已读取场景 #${sceneNumber} · MAP #${scene.record.mapNumber}`)
+      setToast(requestedFocus
+        ? `已定位场景 #${sceneNumber} · 事件 #${requestedFocus.object.index + 1}`
+        : `已读取场景 #${sceneNumber} · MAP #${scene.record.mapNumber}`)
     } catch (error) {
       if (token !== sceneLoadTokenRef.current) return
       setLoadedScene(null)
@@ -1505,7 +1511,20 @@ export default function App() {
               onToggleBreakpoint={toggleDebugBreakpoint}
             />
           : <ScriptEditor script={selectedScript} />)}
-        {view === 'resources' && <ResourceBrowser resources={resources} palettes={palettes} selectedPath={selectedResourcePath} profile={gameProfile} onProfile={setGameProfile} onSelectResource={setSelectedResourcePath} onImport={() => assetInputRef.current?.click()} onOpenDirectory={() => gameInputRef.current?.click()} onToast={setToast} />}
+        {view === 'resources' && <ResourceBrowser
+          resources={resources}
+          palettes={palettes}
+          selectedPath={selectedResourcePath}
+          profile={gameProfile}
+          sceneCatalog={sceneCatalog}
+          onProfile={setGameProfile}
+          onSelectResource={setSelectedResourcePath}
+          onImport={() => assetInputRef.current?.click()}
+          onOpenDirectory={() => gameInputRef.current?.click()}
+          onOpenScene={(sceneNumber, eventObjectIndex) => void openRealScene(sceneNumber, archives, sceneCatalog, gameProfile, eventObjectIndex)}
+          onOpenScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }}
+          onToast={setToast}
+        />}
         {view === 'animation' && <AnimationForge
           animations={animationDrafts}
           selectedId={selectedAnimationId}
