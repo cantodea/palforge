@@ -15,6 +15,7 @@ import {
   Download,
   FileCode2,
   FileImage,
+  Film,
   FolderOpen,
   Gamepad2,
   Grid3X3,
@@ -43,10 +44,12 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { MapCanvas } from './components/MapCanvas'
+import { AnimationForge } from './components/AnimationForge'
 import { PalSceneCanvas, type PalTileSelection } from './components/PalSceneCanvas'
 import { ResourceBrowser } from './components/ResourceBrowser'
 import { SdlpalRunnerDialog } from './components/SdlpalRunnerDialog'
 import { readMkfChunk, readMkfIndex } from './core/mkf'
+import { parseForgeAnimationDrafts, type ForgeAnimationDraft } from './core/animationProject'
 import { decodePatChunk } from './core/palette'
 import type { GameProfile } from './core/resourceDecoder'
 import {
@@ -113,7 +116,7 @@ import type {
   TestSettings,
 } from './types'
 
-type View = 'map' | 'script' | 'resources' | 'modules'
+type View = 'map' | 'script' | 'resources' | 'animation' | 'modules'
 type Tool = 'select' | 'paint' | 'event'
 
 type SceneDebugTarget = {
@@ -197,6 +200,9 @@ function ProjectExplorer({
   selectedRealScriptEntry,
   onRealScript,
   editedScriptEntries,
+  animations,
+  selectedAnimationId,
+  onAnimation,
 }: {
   view: View
   onView: (view: View) => void
@@ -210,6 +216,9 @@ function ProjectExplorer({
   selectedRealScriptEntry: number | null
   onRealScript: (entry: number) => void
   editedScriptEntries: number[]
+  animations: ForgeAnimationDraft[]
+  selectedAnimationId: string
+  onAnimation: (id: string) => void
 }) {
   return (
     <aside className="explorer panel">
@@ -290,10 +299,20 @@ function ProjectExplorer({
               </button>
             ))}
         </Section>
+        <Section title="工程动画" count={animations.length}>
+          {animations.map((animation) => (
+            <button className={`tree-item ${view === 'animation' && selectedAnimationId === animation.id ? 'selected' : ''}`} key={animation.id} onClick={() => onAnimation(animation.id)}>
+              <Film size={14} />
+              <span>{animation.name}</span>
+              <code>{animation.frames.length}F</code>
+            </button>
+          ))}
+          {animations.length === 0 && <button className="tree-item muted-item" onClick={() => onView('animation')}><Film size={14} /><span>新建动画模板…</span></button>}
+        </Section>
         <Section title="扩展内容" count={2}>
-          <button className="tree-item" onClick={() => onView('resources')}>
+          <button className="tree-item" onClick={() => onView('animation')}>
             <FileImage size={14} />
-            <span>自定义美术</span>
+            <span>Animation Forge</span>
           </button>
           <button className="tree-item" onClick={() => onView('modules')}>
             <Blocks size={14} />
@@ -329,7 +348,7 @@ function TopBar({
       <div className="brand">
         <span className="brand-mark"><Hammer size={17} /></span>
         <strong>PalForge</strong>
-        <span className="version">ALPHA 0.7.1</span>
+        <span className="version">ALPHA 0.8</span>
       </div>
       <div className="breadcrumb">
         <FolderOpen size={14} />
@@ -971,6 +990,17 @@ function loadStoredScriptDrafts(): ForgeScriptDraft[] {
   }
 }
 
+function loadStoredAnimationDrafts(): ForgeAnimationDraft[] {
+  try {
+    const stored = globalThis.localStorage?.getItem('palforge.project')
+    if (!stored) return []
+    const project = JSON.parse(stored)
+    return parseForgeAnimationDrafts(project.animations ?? project.animationProject?.animations)
+  } catch {
+    return []
+  }
+}
+
 export default function App() {
   const [view, setView] = useState<View>('map')
   const [map, setMap] = useState<SceneMap>(() => structuredClone(demoMap))
@@ -989,6 +1019,8 @@ export default function App() {
   const [selectedScriptId, setSelectedScriptId] = useState('script-0042')
   const [selectedRealScriptEntry, setSelectedRealScriptEntry] = useState<number | null>(null)
   const [scriptDrafts, setScriptDrafts] = useState<ForgeScriptDraft[]>(loadStoredScriptDrafts)
+  const [animationDrafts, setAnimationDrafts] = useState<ForgeAnimationDraft[]>(loadStoredAnimationDrafts)
+  const [selectedAnimationId, setSelectedAnimationId] = useState('')
   const [scriptDraftHistory, setScriptDraftHistory] = useState<Record<string, ForgeScriptDraft[]>>({})
   const [zoom, setZoom] = useState(0.85)
   const [showGrid, setShowGrid] = useState(true)
@@ -1060,9 +1092,11 @@ export default function App() {
   const activeCompiledScript = compiledScriptProject.scripts.find((script) => script.sourceEntry === selectedRealScriptEntry)
   const activeDraftHistory = selectedRealScriptEntry === null ? [] : scriptDraftHistory[String(selectedRealScriptEntry)] ?? []
   const activeDraftSourceMismatch = Boolean(activeScriptDraft && sceneCatalog && !isForgeScriptDraftCompatible(activeScriptDraft, sceneCatalog.scriptEntries))
-  const sceneTitle = loadedScene
-    ? `场景 #${String(loadedScene.record.number).padStart(3, '0')} · 地图 #${String(loadedScene.record.mapNumber).padStart(3, '0')}`
-    : '十里坡 · 原型场景'
+  const sceneTitle = view === 'animation'
+    ? `Animation Forge${animationDrafts.find((animation) => animation.id === selectedAnimationId)?.name ? ` · ${animationDrafts.find((animation) => animation.id === selectedAnimationId)?.name}` : ''}`
+    : loadedScene
+      ? `场景 #${String(loadedScene.record.number).padStart(3, '0')} · 地图 #${String(loadedScene.record.mapNumber).padStart(3, '0')}`
+      : '十里坡 · 原型场景'
 
   const debugPalette = sceneDebugSession
     ? palettes.find((palette) => palette.index === sceneDebugSession.palette.number && palette.variant === (sceneDebugSession.palette.night ? 'night' : 'day')) ?? mapPalette
@@ -1298,14 +1332,18 @@ export default function App() {
   }
 
   const saveProject = () => {
-    localStorage.setItem('palforge.project', JSON.stringify({ format: 'palforge-project', version: 2, map, modules, testSettings, scriptDrafts }))
-    setToast(`工程快照已保存 · ${scriptDrafts.length} 个脚本覆盖`)
+    try {
+      localStorage.setItem('palforge.project', JSON.stringify({ format: 'palforge-project', version: 3, map, modules, testSettings, scriptDrafts, animations: animationDrafts }))
+      setToast(`工程快照已保存 · ${scriptDrafts.length} 个脚本覆盖 · ${animationDrafts.length} 个动画`)
+    } catch {
+      setToast('浏览器存储空间不足；请先导出动画包或完整工程 JSON')
+    }
   }
 
   const exportProject = () => {
     const payload = JSON.stringify({
       format: 'palforge-project',
-      version: 2,
+      version: 3,
       map,
       modules,
       testSettings,
@@ -1314,6 +1352,11 @@ export default function App() {
         version: 1,
         drafts: scriptDrafts,
         compiledPreview: compiledScriptProject,
+      },
+      animationProject: {
+        format: 'palforge-animation-project',
+        version: 1,
+        animations: animationDrafts,
       },
       resources: resources.map(({ name, path, size, kind, chunks }) => ({ name, path, size, kind, chunks })),
     }, null, 2)
@@ -1339,6 +1382,7 @@ export default function App() {
             setView('script')
           }}><Braces size={20} /></RailButton>
           <RailButton label="资源" active={view === 'resources'} onClick={() => setView('resources')}><Archive size={20} /></RailButton>
+          <RailButton label="动画" active={view === 'animation'} onClick={() => setView('animation')}><Film size={20} /></RailButton>
           <RailButton label="模块" active={view === 'modules'} onClick={() => setView('modules')}><Blocks size={20} /></RailButton>
         </div>
         <RailButton label="设置"><Settings2 size={20} /></RailButton>
@@ -1356,6 +1400,9 @@ export default function App() {
         selectedRealScriptEntry={selectedRealScriptEntry}
         onRealScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }}
         editedScriptEntries={scriptDrafts.map((draft) => draft.sourceEntry)}
+        animations={animationDrafts}
+        selectedAnimationId={selectedAnimationId}
+        onAnimation={(id) => { setSelectedAnimationId(id); setView('animation') }}
       />
       <main className={`main-area ${testOpen && !projectMounted ? 'test-open' : ''}`}>
         {view === 'map' && (
@@ -1459,6 +1506,15 @@ export default function App() {
             />
           : <ScriptEditor script={selectedScript} />)}
         {view === 'resources' && <ResourceBrowser resources={resources} palettes={palettes} selectedPath={selectedResourcePath} profile={gameProfile} onProfile={setGameProfile} onSelectResource={setSelectedResourcePath} onImport={() => assetInputRef.current?.click()} onOpenDirectory={() => gameInputRef.current?.click()} onToast={setToast} />}
+        {view === 'animation' && <AnimationForge
+          animations={animationDrafts}
+          selectedId={selectedAnimationId}
+          resources={resources}
+          onAnimations={setAnimationDrafts}
+          onSelect={setSelectedAnimationId}
+          onOpenOriginal={(path) => { setSelectedResourcePath(path); setView('resources') }}
+          onToast={setToast}
+        />}
         {view === 'modules' && <ModulesView modules={modules} onToggle={(id) => setModules((current) => current.map((module) => module.id === id ? { ...module, enabled: !module.enabled } : module))} />}
       </main>
       {view === 'map' && loadedScene && <PalSceneInspector scene={loadedScene} selectedTile={realSelectedTile} selectedEvent={selectedPalEvent} onOpenScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }} onDebugScript={debugScriptInScene} debugActive={Boolean(sceneDebugSession)} />}

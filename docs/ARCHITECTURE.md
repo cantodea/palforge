@@ -13,9 +13,9 @@
 | 层 | 职责 | 当前状态 |
 |---|---|---|
 | Format adapters | 读取 MKF、YJ_1/YJ_2、sprite/RLE、PAT、FBP、SSS 场景/事件/脚本与 MAP/GOP | 真实场景和脚本只读链路已实现 |
-| Domain model | 场景、单元、事件、脚本、资源引用、项目差异 | PAL 场景、脚本入口、工程脚本覆盖与场景调试快照已实现 |
-| Editor features | 地图、脚本、资源、模块、检查器 | 真实地图/事件查看、工程脚本编辑和场景内调试已实现 |
-| Project codec | `.palforge.json` / 后续压缩工程包的读写与迁移 | version 2 JSON 可保存脚本草稿和编译预览 |
+| Domain model | 场景、单元、事件、脚本、动画、资源引用、项目差异 | PAL 场景、工程脚本、工程动画与场景调试快照已实现 |
+| Editor features | 地图、脚本、资源、动画、模块、检查器 | 真实地图/事件查看、工程脚本、Animation Forge 和场景内调试已实现 |
+| Project codec | `.palforge.json` / 后续压缩工程包的读写与迁移 | version 3 JSON 可保存脚本草稿、编译预览和工程动画 |
 | Runner bridge | 把本地资源复制到隔离文件系统并启动 SDLPAL | 浏览器 WASM 场景直达已实现；工程补丁注入与原生进程待开发 |
 | Module SDK | 注册编辑页、事件、资源、存档字段和测试目标 | manifest 模型已实现 |
 
@@ -24,15 +24,37 @@
 原版和扩展资源不共享裸整数编号。领域模型使用带命名空间的引用：
 
 ```text
-pal://MGO.MKF/104
-pal://MAP.MKF/7
+pal://archives/mgo.mkf/chunks/104
+pal://archives/map.mkf/chunks/7
+project://animations/hero-walk
 forge://assets/portraits/merchant.png
 module://fishing-demo/audio/bite.ogg
 ```
 
 打包器负责把这些稳定引用转换成特定运行配置需要的索引或旁加载文件。这样模块之间不会因为“谁先占了 500 号资源”产生冲突。
 
-## 4. 模块 manifest 草案
+| 命名空间 | 所有者 | 编辑策略 | 当前用途 |
+|---|---|---|---|
+| `pal://` | 用户挂载的原版目录 | 永久只读 | 指向 MKF 与 chunk，资源浏览器负责解码 |
+| `project://` | 当前 PalForge 工程 | 可编辑、可导入导出 | Animation Forge 的稳定动画 ID |
+| `forge://` | 工程扩展文件 | 可替换 | 独立图片、音频和数据文件 |
+| `module://` | 扩展模块 | 按 manifest 管理 | 模块私有资源 |
+
+Animation Forge 导入图片时只把像素写入 `project://animations/{id}` 的工程帧。原版条目只作为 `pal://` 引用显示；即使未来从原版帧派生新动画，也会保留 `source.originalUri` 并把修改后的像素存入工程层，不覆写源 chunk。
+
+## 4. 动画工程格式
+
+工程动画使用 version 1 的内部模型，并随 version 3 `.palforge.json` 保存：
+
+- 动画记录稳定 `project://` URI、循环策略、来源和创建/更新时间；
+- 每帧记录独立 Data URL、尺寸、持续时间和锚点；
+- `.palforge-animation.json` 使用 `palforge-animation-pack` 包装一个或多个动画，导入时按稳定 ID 合并；
+- 精灵表导出将透明 PNG 与布局 JSON 分开，布局保留每帧原始尺寸、位置、时长和锚点；
+- pack 与精灵表都不会包含 `pal://` 原始字节，也不是 MKF 写回格式。
+
+`project://` 绑定到 PAL 事件对象或 SDLPAL 运行时编号仍属于下一阶段；在映射落地前，Animation Forge 是可验证的创作/交换格式，不声称替换引擎资源。
+
+## 5. 模块 manifest 草案
 
 ```json
 {
@@ -53,9 +75,9 @@ module://fishing-demo/audio/bite.ogg
 
 模块不能直接写原始 MKF，也不能在未声明的情况下访问工程外文件。Runner Bridge 在独立测试目录中合成它需要的数据。
 
-## 5. 两层即时测试
+## 6. 两层即时测试
 
-### 5.1 浏览器 Scene Debugger（当前实现）
+### 6.1 浏览器 Scene Debugger（当前实现）
 
 1. 从当前真实场景、全部事件对象、所选图块和 PAT 调色板复制一个隔离快照；
 2. 合并原始 `SSS.MKF #4`、M.MSG 与 Script Forge 的追加式编译结果，并先应用 `entryRedirects`；
@@ -66,7 +88,7 @@ module://fishing-demo/audio/bite.ogg
 
 因此浏览器层适合验证脚本流和可观察场景状态，而不是声称完整复现游戏。自动脚本的等待帧只按确定性步数推进，音乐/复杂视觉效果只记录日志。
 
-### 5.2 Runner Bridge（后续实现）
+### 6.2 Runner Bridge（后续实现）
 
 浏览器 Runner 的第一阶段已经实现：
 
@@ -87,7 +109,7 @@ Windows 原生 Runner 仍按下面的长期流程实现：
 
 编辑器保存的工程与一次测试生成的临时副本必须严格分开，避免测试副作用污染创作数据。
 
-## 6. 脚本覆盖与地址稳定性
+## 7. 脚本覆盖与地址稳定性
 
 原版事件脚本是一个全局 16 位地址数组。在中间直接插入指令会移动其后的所有地址，因此 Script Forge 使用追加式编译：
 
@@ -100,6 +122,6 @@ Windows 原生 Runner 仍按下面的长期流程实现：
 
 `.palforge.json` 保存可编辑草稿和确定性的编译预览；当前阶段不直接生成或覆盖 `SSS.MKF`、`M.MSG`。
 
-## 7. 接下来最值得先做的工作
+## 8. 接下来最值得先做的工作
 
-`Scene Lens`、`Script Lens`、`Script Forge`、`Scene Debugger` 与 SDLPAL-WASM Runner 已形成真实读取 → 工程覆盖 → 单步推演 → 原始资源实机运行的链路。下一步应把 `entryRedirects`、追加脚本与消息注入 WASM 临时内存，再实现 Scene Forge 和 Windows 原生 Runner。
+`Scene Lens`、`Script Forge`、`Animation Forge`、`Scene Debugger` 与 SDLPAL-WASM Runner 已形成原版只读 → 工程创作 → 独立验证 → 原始资源实机运行的链路。下一步应建立事件/角色到 `project://` 动画的显式绑定，并与 `entryRedirects`、追加脚本和消息一起注入 WASM 临时内存，再实现 Scene Forge 和 Windows 原生 Runner。
