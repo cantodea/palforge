@@ -26,15 +26,18 @@ import {
   PackagePlus,
   PanelBottomClose,
   PanelBottomOpen,
+  Pause,
   Play,
   PlugZap,
   Save,
   Search,
   Settings2,
+  StepForward,
   SquareMousePointer,
   TerminalSquare,
   Trash2,
   Undo2,
+  RotateCcw,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
@@ -81,6 +84,15 @@ import {
   type CompiledForgeScript,
   type ForgeScriptDraft,
 } from './core/scriptProject'
+import {
+  createSceneDebugRuntime,
+  createSceneDebugSession,
+  resolveSceneDebugDecision,
+  stepSceneDebugSession,
+  type SceneDebugMode,
+  type SceneDebugRuntime,
+  type SceneDebugSession,
+} from './core/sceneDebugger'
 import { createTestSnapshot, type TestSnapshot } from './core/tester'
 import { demoMap, demoModules, demoScripts } from './data/demo'
 import type {
@@ -96,6 +108,14 @@ import type {
 
 type View = 'map' | 'script' | 'resources' | 'modules'
 type Tool = 'select' | 'paint' | 'event'
+
+type SceneDebugTarget = {
+  id: string
+  label: string
+  entry: number
+  eventObjectId: number
+  mode: SceneDebugMode
+}
 
 const resourceKind = (file: File): ImportedResource['kind'] => {
   const extension = file.name.split('.').pop()?.toLowerCase()
@@ -302,7 +322,7 @@ function TopBar({
       <div className="brand">
         <span className="brand-mark"><Hammer size={17} /></span>
         <strong>PalForge</strong>
-        <span className="version">ALPHA 0.5</span>
+        <span className="version">ALPHA 0.6</span>
       </div>
       <div className="breadcrumb">
         <FolderOpen size={14} />
@@ -449,11 +469,15 @@ function PalSceneInspector({
   selectedTile,
   selectedEvent,
   onOpenScript,
+  onDebugScript,
+  debugActive,
 }: {
   scene: LoadedPalScene
   selectedTile: PalTileSelection
   selectedEvent?: LoadedPalEvent
   onOpenScript: (entry: number) => void
+  onDebugScript: (entry: number, eventObjectId: number, mode: SceneDebugMode) => void
+  debugActive: boolean
 }) {
   const tile = scene.map.tiles[selectedTile.y][selectedTile.x][selectedTile.half]
   const triggerLabel = (mode: number) => {
@@ -465,7 +489,7 @@ function PalSceneInspector({
   return (
     <aside className="inspector panel">
       <div className="panel-heading compact">
-        <div><span className="eyebrow">INSPECTOR · REAL DATA</span><strong>{selectedEvent ? '事件对象' : '地图单元'}</strong></div>
+        <div><span className="eyebrow">{debugActive ? 'INSPECTOR · DEBUG SNAPSHOT' : 'INSPECTOR · REAL DATA'}</span><strong>{selectedEvent ? '事件对象' : '地图单元'}</strong></div>
         <Settings2 size={15} />
       </div>
       {selectedEvent ? (
@@ -490,6 +514,10 @@ function PalSceneInspector({
             <button className="wide-button" disabled={selectedEvent.object.triggerScript === 0} onClick={() => onOpenScript(selectedEvent.object.triggerScript)}><Code2 size={14} /> 打开触发脚本</button>
             <button className="wide-button" disabled={selectedEvent.object.autoScript === 0} onClick={() => onOpenScript(selectedEvent.object.autoScript)}><Code2 size={14} /> 打开自动脚本</button>
           </div>
+          <div className="debug-entry-actions">
+            <button className="wide-button debug-button" disabled={selectedEvent.object.triggerScript === 0} onClick={() => onDebugScript(selectedEvent.object.triggerScript, selectedEvent.object.index + 1, 'event-trigger')}><BugPlay size={14} /> 在场景中调试触发脚本</button>
+            <button className="wide-button debug-button" disabled={selectedEvent.object.autoScript === 0} onClick={() => onDebugScript(selectedEvent.object.autoScript, selectedEvent.object.index + 1, 'event-auto')}><BugPlay size={14} /> 调试自动脚本</button>
+          </div>
           {selectedEvent.error && <div className="scene-warning"><AlertTriangle size={14} />{selectedEvent.error}</div>}
         </div>
       ) : (
@@ -509,6 +537,10 @@ function PalSceneInspector({
           <div className="script-entry-actions">
             <button className="wide-button" disabled={scene.record.scriptOnEnter === 0} onClick={() => onOpenScript(scene.record.scriptOnEnter)}><Code2 size={14} /> 场景进入 {formatPalEntry(scene.record.scriptOnEnter)}</button>
             <button className="wide-button" disabled={scene.record.scriptOnTeleport === 0} onClick={() => onOpenScript(scene.record.scriptOnTeleport)}><Code2 size={14} /> 场景传送 {formatPalEntry(scene.record.scriptOnTeleport)}</button>
+          </div>
+          <div className="debug-entry-actions">
+            <button className="wide-button debug-button" disabled={scene.record.scriptOnEnter === 0} onClick={() => onDebugScript(scene.record.scriptOnEnter, 0, 'scene-enter')}><BugPlay size={14} /> 调试场景进入脚本</button>
+            <button className="wide-button debug-button" disabled={scene.record.scriptOnTeleport === 0} onClick={() => onDebugScript(scene.record.scriptOnTeleport, 0, 'scene-teleport')}><BugPlay size={14} /> 调试传送脚本</button>
           </div>
         </div>
       )}
@@ -567,6 +599,9 @@ function RealScriptEditor({
   canUndo,
   onUndo,
   sourceMismatch,
+  debugEntry,
+  breakpoints,
+  onToggleBreakpoint,
 }: {
   entries: PalScriptEntry[]
   startEntry: number
@@ -583,6 +618,9 @@ function RealScriptEditor({
   canUndo: boolean
   onUndo: () => void
   sourceMismatch: boolean
+  debugEntry: number | null
+  breakpoints: number[]
+  onToggleBreakpoint: (entry: number) => void
 }) {
   const [entryInput, setEntryInput] = useState(formatPalWord(startEntry))
   const [selectedCommandId, setSelectedCommandId] = useState<string | null>(null)
@@ -645,8 +683,9 @@ function RealScriptEditor({
             const compiledAddress = compiledById[command.id]
             const compiledEntry = compiledEntryByAddress.get(compiledAddress)
             return (
-              <div className={`command-card editable ${scriptCategoryClass({ index: compiledAddress ?? 0, operation: command.operation, operands: command.operands })} ${selectedCommandId === command.id ? 'selected' : ''}`} key={command.id} onClick={() => setSelectedCommandId(command.id)}>
+              <div className={`command-card editable ${scriptCategoryClass({ index: compiledAddress ?? 0, operation: command.operation, operands: command.operands })} ${selectedCommandId === command.id ? 'selected' : ''} ${compiledAddress === debugEntry ? 'debug-current' : ''}`} key={command.id} onClick={() => setSelectedCommandId(command.id)}>
                 <div className="command-index">
+                  <button className={`breakpoint-button ${compiledAddress !== undefined && breakpoints.includes(compiledAddress) ? 'active' : ''}`} disabled={compiledAddress === undefined} title="切换断点" onClick={(event) => { event.stopPropagation(); if (compiledAddress !== undefined) onToggleBreakpoint(compiledAddress) }} />
                   <b>{compiledAddress === undefined ? '—' : formatPalEntry(compiledAddress)}</b>
                   <small>{command.sourceIndex === null ? 'NEW' : `原 ${formatPalEntry(command.sourceIndex)}`}</small>
                 </div>
@@ -674,8 +713,8 @@ function RealScriptEditor({
             const targets = getPalScriptTargets(entry)
             const message = entry.operation === 0xffff ? messages[entry.operands[0]] : undefined
             return (
-              <div className={`command-card ${scriptCategoryClass(entry)}`} key={entry.index}>
-                <div className="command-index">{formatPalEntry(entry.index)}</div>
+              <div className={`command-card ${scriptCategoryClass(entry)} ${entry.index === debugEntry ? 'debug-current' : ''}`} key={entry.index}>
+                <div className="command-index"><button className={`breakpoint-button ${breakpoints.includes(entry.index) ? 'active' : ''}`} title="切换断点" onClick={() => onToggleBreakpoint(entry.index)} />{formatPalEntry(entry.index)}</div>
                 <div className="command-main">
                   <span><b>{definition.label}</b><code>{formatPalWord(entry.operation)}</code><i>{definition.category}</i></span>
                   <p className={message ? 'dialogue-preview' : ''}>{message || definition.description}</p>
@@ -774,6 +813,103 @@ function ModulesView({ modules, onToggle }: { modules: ForgeModule[]; onToggle: 
   )
 }
 
+function SceneDebugBench({
+  open,
+  onOpen,
+  runtime,
+  targets,
+  targetId,
+  onTarget,
+  session,
+  running,
+  breakpoints,
+  spawn,
+  onStart,
+  onStep,
+  onRun,
+  onPause,
+  onReset,
+  onDecision,
+  onOpenCurrent,
+  onOpenTargetScene,
+}: {
+  open: boolean
+  onOpen: () => void
+  runtime: SceneDebugRuntime
+  targets: SceneDebugTarget[]
+  targetId: string
+  onTarget: (id: string) => void
+  session: SceneDebugSession | null
+  running: boolean
+  breakpoints: number[]
+  spawn: PalTileSelection
+  onStart: () => void
+  onStep: () => void
+  onRun: () => void
+  onPause: () => void
+  onReset: () => void
+  onDecision: (optionId: string) => void
+  onOpenCurrent: () => void
+  onOpenTargetScene: () => void
+}) {
+  const current = session ? runtime.entries[session.currentEntry] : undefined
+  const definition = current ? getPalOpcodeDefinition(current.operation) : undefined
+  const statusLabel = running ? 'RUNNING' : session?.status.toUpperCase() ?? 'IDLE'
+  return (
+    <section className={`scene-debug-bench ${open ? 'open' : ''}`}>
+      <button className="test-handle" onClick={onOpen}>
+        <span><BugPlay size={16} /><strong>场景脚本调试器</strong><i className="ready-pill">READ-ONLY SANDBOX</i></span>
+        <span>{session ? `${formatPalEntry(session.currentEntry)} · ${session.stopReason}` : '选择当前场景入口或事件脚本'} {open ? <PanelBottomClose size={16} /> : <PanelBottomOpen size={16} />}</span>
+      </button>
+      {open && <div className="scene-debug-content">
+        <div className="debug-setup-panel">
+          <span className="eyebrow">SCENE CONTEXT</span>
+          <label className="field"><span>调试目标</span><select value={targetId} onChange={(event) => onTarget(event.target.value)}>
+            {targets.map((target) => <option key={target.id} value={target.id}>{target.label} · {formatPalEntry(target.entry)}</option>)}
+          </select></label>
+          <div className="debug-context-grid">
+            <span><small>队伍起点</small><b>{spawn.x}, {spawn.y}, H{spawn.half}</b></span>
+            <span><small>断点</small><b>{breakpoints.length}</b></span>
+            <span><small>覆盖层</small><b>{session && session.currentEntry !== session.sourceEntry ? '工程/重定向' : '原始入口'}</b></span>
+          </div>
+          <button className="primary-button debug-start" disabled={targets.length === 0} onClick={onStart}><BugPlay size={14} /> 建立场景沙盒</button>
+          <p>从当前图块生成队伍位置，复制本场景事件状态；所有变化仅存在于这次调试会话。</p>
+        </div>
+        <div className="debug-execution-panel">
+          <div className="debug-panel-title"><span className="eyebrow">EXECUTION</span><i className={`debug-status ${session?.status ?? 'idle'} ${running ? 'running' : ''}`}>{statusLabel}</i></div>
+          {session ? <>
+            <div className="debug-current-command">
+              <span><b>{formatPalEntry(session.currentEntry)}</b><code>{current ? formatPalWord(current.operation) : 'OUT OF RANGE'}</code></span>
+              <strong>{definition?.label ?? session.stopReason}</strong>
+              <small>{current?.operands.map((operand, index) => `P${index} ${formatPalWord(operand)}`).join(' · ')}</small>
+            </div>
+            <div className="debug-transport">
+              <button className="icon-button" title="重置" onClick={onReset}><RotateCcw size={14} /></button>
+              <button className="toolbar-button" disabled={session.status !== 'paused' || running} onClick={onStep}><StepForward size={14} /> 单步</button>
+              {!running
+                ? <button className="primary-button" disabled={session.status !== 'paused'} onClick={onRun}><Play size={14} fill="currentColor" /> 继续</button>
+                : <button className="toolbar-button pause-button" onClick={onPause}><Pause size={14} fill="currentColor" /> 暂停</button>}
+              <button className="toolbar-button" onClick={onOpenCurrent}><Code2 size={14} /> 定位脚本</button>
+            </div>
+            {session.pendingDecision && <div className="debug-decision">
+              <strong>{session.pendingDecision.prompt}</strong>
+              <div>{session.pendingDecision.options.map((option) => <button key={option.id} onClick={() => onDecision(option.id)}>{option.label}</button>)}</div>
+            </div>}
+            {session.nextSceneNumber && <button className="wide-button debug-button" onClick={onOpenTargetScene}>打开脚本请求的场景 #{session.nextSceneNumber}</button>}
+            <div className="debug-state-strip">
+              <span>步骤 <b>{session.steps}</b></span><span>调用栈 <b>{session.callStack.length}</b></span><span>事件 <b>#{session.eventObjectId || 'SCENE'}</b></span><span>调色板 <b>{session.palette.number}/{session.palette.night ? '夜' : '日'}</b></span><span>状态 <b>{session.scriptSuccess ? '成功' : '失败'}</b></span>
+            </div>
+          </> : <div className="debug-empty"><BugPlay size={22} /><strong>尚未建立会话</strong><span>选择入口后点击“建立场景沙盒”。</span></div>}
+        </div>
+        <div className="debug-console-panel">
+          <div className="console-title"><TerminalSquare size={14} /> DEBUG TRACE <span>{session ? `${session.logs.length} LOGS` : 'IDLE'}</span></div>
+          <pre>{session?.logs.length ? session.logs.map((log) => `${log.step.toString().padStart(4, '0')} ${formatPalEntry(log.entry)} ${log.level.toUpperCase().padEnd(7)} ${log.message}`).join('\n') : '› 沙盒不会写入 SSS.MKF、M.MSG 或存档。\n› 未模拟的 opcode 会暂停并要求明确处理。'}</pre>
+        </div>
+      </div>}
+    </section>
+  )
+}
+
 function TestBench({
   open,
   onOpen,
@@ -853,11 +989,17 @@ export default function App() {
   const [projectMounted, setProjectMounted] = useState(false)
   const [testOpen, setTestOpen] = useState(true)
   const [snapshot, setSnapshot] = useState<TestSnapshot | null>(null)
+  const [sceneDebugOpen, setSceneDebugOpen] = useState(false)
+  const [sceneDebugTargetId, setSceneDebugTargetId] = useState('')
+  const [sceneDebugSession, setSceneDebugSession] = useState<SceneDebugSession | null>(null)
+  const [sceneDebugRunning, setSceneDebugRunning] = useState(false)
+  const [sceneDebugBreakpoints, setSceneDebugBreakpoints] = useState<number[]>([])
   const [toast, setToast] = useState('')
   const [testSettings, setTestSettings] = useState<TestSettings>({ scene: demoMap.name, spawnX: 7, spawnY: 4, partyLevel: 8, eventId: 'event-01', flags: ['met_ling_er'] })
   const gameInputRef = useRef<HTMLInputElement>(null)
   const assetInputRef = useRef<HTMLInputElement>(null)
   const sceneLoadTokenRef = useRef(0)
+  const debugSkipBreakpointOnceRef = useRef(false)
 
   useEffect(() => gameInputRef.current?.setAttribute('webkitdirectory', ''), [])
   useEffect(() => {
@@ -867,7 +1009,10 @@ export default function App() {
   }, [toast])
 
   const selectedEvent = map.events.find((event) => event.id === selectedEventId)
-  const selectedPalEvent = loadedScene?.events.find((event) => event.object.index === realSelectedEventIndex)
+  const selectedPalEventSource = loadedScene?.events.find((event) => event.object.index === realSelectedEventIndex)
+  const selectedPalEvent = selectedPalEventSource && sceneDebugSession?.events[String(selectedPalEventSource.object.index + 1)]
+    ? { ...selectedPalEventSource, object: sceneDebugSession.events[String(selectedPalEventSource.object.index + 1)] }
+    : selectedPalEventSource
   const selectedScript = useMemo(() => demoScripts.find((script) => script.id === selectedScriptId) ?? demoScripts[0], [selectedScriptId])
   const realScriptReferences = useMemo(
     () => loadedScene ? collectSceneScriptReferences(loadedScene.record, loadedScene.events.map((event) => event.object)) : [],
@@ -882,6 +1027,22 @@ export default function App() {
     ),
     [scriptDrafts, sceneCatalog],
   )
+  const sceneDebugRuntime = useMemo(
+    () => createSceneDebugRuntime(sceneCatalog?.scriptEntries ?? [], sceneCatalog?.messages ?? [], compiledScriptProject),
+    [sceneCatalog, compiledScriptProject],
+  )
+  const sceneDebugTargets = useMemo((): SceneDebugTarget[] => {
+    if (!loadedScene) return []
+    const targets: SceneDebugTarget[] = []
+    if (loadedScene.record.scriptOnEnter) targets.push({ id: 'scene-enter', label: `场景 #${loadedScene.record.number} · 进入脚本`, entry: loadedScene.record.scriptOnEnter, eventObjectId: 0, mode: 'scene-enter' })
+    if (loadedScene.record.scriptOnTeleport) targets.push({ id: 'scene-teleport', label: `场景 #${loadedScene.record.number} · 传送脚本`, entry: loadedScene.record.scriptOnTeleport, eventObjectId: 0, mode: 'scene-teleport' })
+    for (const event of loadedScene.events) {
+      const eventObjectId = event.object.index + 1
+      if (event.object.triggerScript) targets.push({ id: `event-${eventObjectId}-trigger`, label: `事件 #${eventObjectId} · 触发脚本`, entry: event.object.triggerScript, eventObjectId, mode: 'event-trigger' })
+      if (event.object.autoScript) targets.push({ id: `event-${eventObjectId}-auto`, label: `事件 #${eventObjectId} · 自动脚本`, entry: event.object.autoScript, eventObjectId, mode: 'event-auto' })
+    }
+    return targets
+  }, [loadedScene])
   const activeScriptDraft = scriptDrafts.find((draft) => draft.sourceEntry === selectedRealScriptEntry)
   const activeCompiledScript = compiledScriptProject.scripts.find((script) => script.sourceEntry === selectedRealScriptEntry)
   const activeDraftHistory = selectedRealScriptEntry === null ? [] : scriptDraftHistory[String(selectedRealScriptEntry)] ?? []
@@ -890,8 +1051,96 @@ export default function App() {
     ? `场景 #${String(loadedScene.record.number).padStart(3, '0')} · 地图 #${String(loadedScene.record.mapNumber).padStart(3, '0')}`
     : '十里坡 · 原型场景'
 
+  const debugPalette = sceneDebugSession
+    ? palettes.find((palette) => palette.index === sceneDebugSession.palette.number && palette.variant === (sceneDebugSession.palette.night ? 'night' : 'day')) ?? mapPalette
+    : mapPalette
+
+  useEffect(() => {
+    if (sceneDebugTargets.length === 0) {
+      setSceneDebugTargetId('')
+      return
+    }
+    if (sceneDebugSession) return
+    const eventObjectId = realSelectedEventIndex === null ? null : realSelectedEventIndex + 1
+    const preferred = eventObjectId === null ? undefined : sceneDebugTargets.find((target) => target.id === `event-${eventObjectId}-trigger`)
+      ?? sceneDebugTargets.find((target) => target.id === `event-${eventObjectId}-auto`)
+    setSceneDebugTargetId((current) => preferred?.id ?? (sceneDebugTargets.some((target) => target.id === current) ? current : sceneDebugTargets[0].id))
+  }, [realSelectedEventIndex, sceneDebugSession, sceneDebugTargets])
+
+  useEffect(() => {
+    if (!sceneDebugRunning || !sceneDebugSession || sceneDebugSession.status !== 'paused') return
+    const timer = window.setTimeout(() => {
+      if (sceneDebugBreakpoints.includes(sceneDebugSession.currentEntry) && !debugSkipBreakpointOnceRef.current) {
+        setSceneDebugSession((current) => current ? { ...current, stopReason: `命中断点 ${formatPalEntry(current.currentEntry)}` } : current)
+        setSceneDebugRunning(false)
+        return
+      }
+      debugSkipBreakpointOnceRef.current = false
+      const next = stepSceneDebugSession(sceneDebugRuntime, sceneDebugSession)
+      setSceneDebugSession(next)
+      if (next.status !== 'paused') setSceneDebugRunning(false)
+    }, 160)
+    return () => window.clearTimeout(timer)
+  }, [sceneDebugBreakpoints, sceneDebugRunning, sceneDebugRuntime, sceneDebugSession])
+
   const updateEvent = (updated: MapEvent) => setMap((current) => ({ ...current, events: current.events.map((event) => event.id === updated.id ? updated : event) }))
   const paintTile = (x: number, y: number) => setMap((current) => ({ ...current, tiles: current.tiles.map((row, rowIndex) => rowIndex !== y ? row : row.map((tile, columnIndex) => columnIndex !== x ? tile : { ...tile, terrain: brush, blocked: brush === 'water' }) ) }))
+
+  const startSceneDebug = (targetOverride?: SceneDebugTarget) => {
+    if (!loadedScene || !sceneCatalog) return
+    const target = targetOverride ?? sceneDebugTargets.find((candidate) => candidate.id === sceneDebugTargetId)
+    if (!target) {
+      setToast('当前场景没有可调试的脚本入口')
+      return
+    }
+    const incompatibleDraft = scriptDrafts.find((draft) => !isForgeScriptDraftCompatible(draft, sceneCatalog.scriptEntries))
+    if (incompatibleDraft) {
+      setToast(`工程脚本 ${formatPalEntry(incompatibleDraft.sourceEntry)} 与当前 SSS.MKF 不匹配，已阻止调试`)
+      return
+    }
+    const structuralError = compiledScriptProject.issues.find((issue) => issue.level === 'error' && issue.code !== 'message-base-missing')
+    if (structuralError) {
+      setToast(`脚本覆盖无法调试：${structuralError.message}`)
+      return
+    }
+    const session = createSceneDebugSession(sceneDebugRuntime, {
+      id: `scene-${loadedScene.record.number}-${target.id}`,
+      mode: target.mode,
+      sourceEntry: target.entry,
+      eventObjectId: target.eventObjectId,
+      scene: loadedScene.record,
+      events: loadedScene.events.map((event) => event.object),
+      party: {
+        x: realSelectedTile.x * 32 + realSelectedTile.half * 16,
+        y: realSelectedTile.y * 16 + realSelectedTile.half * 8,
+      },
+      palette: { number: mapPalette?.index ?? 0, night: mapPalette?.variant === 'night' },
+    })
+    setSceneDebugTargetId(target.id)
+    setSceneDebugSession(session)
+    setSceneDebugRunning(false)
+    setSceneDebugOpen(true)
+    setSelectedRealScriptEntry(target.entry)
+    if (target.eventObjectId > 0) setRealSelectedEventIndex(target.eventObjectId - 1)
+    setToast(`已建立场景 #${loadedScene.record.number} 调试沙盒`)
+  }
+
+  const debugScriptInScene = (entry: number, eventObjectId: number, mode: SceneDebugMode) => {
+    const target = sceneDebugTargets.find((candidate) => candidate.entry === entry && candidate.eventObjectId === eventObjectId && candidate.mode === mode)
+      ?? { id: `${mode}-${eventObjectId}-${entry}`, label: `${mode} · ${formatPalEntry(entry)}`, entry, eventObjectId, mode }
+    startSceneDebug(target)
+  }
+
+  const openDebugCurrentScript = () => {
+    if (!sceneDebugSession) return
+    const owner = compiledScriptProject.scripts.find((script) => script.entries.some((entry) => entry.index === sceneDebugSession.currentEntry))
+    setSelectedRealScriptEntry(owner?.sourceEntry ?? sceneDebugSession.currentEntry)
+    setView('script')
+  }
+
+  const toggleDebugBreakpoint = (entry: number) => setSceneDebugBreakpoints((current) => current.includes(entry)
+    ? current.filter((candidate) => candidate !== entry)
+    : [...current, entry].sort((left, right) => left - right))
 
   const openRealScene = async (
     sceneNumber: number,
@@ -923,6 +1172,8 @@ export default function App() {
       setTool('select')
       setZoom(0.5)
       setSnapshot(null)
+      setSceneDebugSession(null)
+      setSceneDebugRunning(false)
       setToast(`已读取场景 #${sceneNumber} · MAP #${scene.record.mapNumber}`)
     } catch (error) {
       if (token !== sceneLoadTokenRef.current) return
@@ -1077,11 +1328,13 @@ export default function App() {
             {loadedScene ? (
               <PalSceneCanvas
                 scene={loadedScene}
-                palette={mapPalette}
+                palette={debugPalette}
                 zoom={zoom}
                 showGrid={showGrid}
                 selectedTile={realSelectedTile}
                 selectedEventIndex={realSelectedEventIndex}
+                eventOverrides={sceneDebugSession?.events}
+                debugParty={sceneDebugSession?.party}
                 onSelectTile={(tile) => { setRealSelectedTile(tile); setRealSelectedEventIndex(null) }}
                 onSelectEvent={(event) => setRealSelectedEventIndex(event.object.index)}
               />
@@ -1151,13 +1404,46 @@ export default function App() {
                 setScriptDraftHistory((current) => ({ ...current, [String(previous.sourceEntry)]: (current[String(previous.sourceEntry)] ?? []).slice(0, -1) }))
               }}
               sourceMismatch={activeDraftSourceMismatch}
+              debugEntry={sceneDebugSession?.currentEntry ?? null}
+              breakpoints={sceneDebugBreakpoints}
+              onToggleBreakpoint={toggleDebugBreakpoint}
             />
           : <ScriptEditor script={selectedScript} />)}
         {view === 'resources' && <ResourceBrowser resources={resources} palettes={palettes} selectedPath={selectedResourcePath} profile={gameProfile} onProfile={setGameProfile} onSelectResource={setSelectedResourcePath} onImport={() => assetInputRef.current?.click()} onOpenDirectory={() => gameInputRef.current?.click()} onToast={setToast} />}
         {view === 'modules' && <ModulesView modules={modules} onToggle={(id) => setModules((current) => current.map((module) => module.id === id ? { ...module, enabled: !module.enabled } : module))} />}
       </main>
-      {view === 'map' && loadedScene && <PalSceneInspector scene={loadedScene} selectedTile={realSelectedTile} selectedEvent={selectedPalEvent} onOpenScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }} />}
+      {view === 'map' && loadedScene && <PalSceneInspector scene={loadedScene} selectedTile={realSelectedTile} selectedEvent={selectedPalEvent} onOpenScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }} onDebugScript={debugScriptInScene} debugActive={Boolean(sceneDebugSession)} />}
       {view === 'map' && !projectMounted && <Inspector map={map} selectedTile={selectedTile} selectedEvent={selectedEvent} onEventChange={updateEvent} />}
+      {loadedScene && sceneCatalog && <SceneDebugBench
+        open={sceneDebugOpen}
+        onOpen={() => setSceneDebugOpen((current) => !current)}
+        runtime={sceneDebugRuntime}
+        targets={sceneDebugTargets}
+        targetId={sceneDebugTargetId}
+        onTarget={setSceneDebugTargetId}
+        session={sceneDebugSession}
+        running={sceneDebugRunning}
+        breakpoints={sceneDebugBreakpoints}
+        spawn={realSelectedTile}
+        onStart={() => startSceneDebug()}
+        onStep={() => {
+          setSceneDebugRunning(false)
+          setSceneDebugSession((current) => current ? stepSceneDebugSession(sceneDebugRuntime, current) : current)
+        }}
+        onRun={() => {
+          if (!sceneDebugSession || sceneDebugSession.status !== 'paused') return
+          debugSkipBreakpointOnceRef.current = sceneDebugBreakpoints.includes(sceneDebugSession.currentEntry)
+          setSceneDebugRunning(true)
+        }}
+        onPause={() => setSceneDebugRunning(false)}
+        onReset={() => startSceneDebug()}
+        onDecision={(optionId) => {
+          setSceneDebugRunning(false)
+          setSceneDebugSession((current) => current ? resolveSceneDebugDecision(sceneDebugRuntime, current, optionId) : current)
+        }}
+        onOpenCurrent={openDebugCurrentScript}
+        onOpenTargetScene={() => { if (sceneDebugSession?.nextSceneNumber) void openRealScene(sceneDebugSession.nextSceneNumber) }}
+      />}
       {view === 'map' && !projectMounted && <TestBench open={testOpen} onOpen={() => setTestOpen((value) => !value)} settings={testSettings} onSettings={setTestSettings} events={map.events} onRun={() => { const event = map.events.find((item) => item.id === testSettings.eventId); setSnapshot(createTestSnapshot(testSettings, event)); setToast('独立测试快照已建立') }} snapshot={snapshot} />}
       {toast && <div className="toast"><CircleDot size={14} />{toast}</div>}
       <footer className="statusbar"><span><span className="status-light" /> PalForge project</span><span>UTF-8</span><span>SDLPAL classic profile</span><span className="status-spacer" /><span>Ln {(loadedScene ? realSelectedTile.y : selectedTile.y) + 1}, Col {(loadedScene ? realSelectedTile.x : selectedTile.x) + 1}</span><span>{loadedScene ? 'READ ONLY' : 'main*'}</span></footer>

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { grayscalePalette } from '../core/palette'
 import { indexedToRgba } from '../core/rle'
 import { selectEventFrame, type LoadedPalEvent, type LoadedPalScene } from '../core/sceneLoader'
+import type { PalEventObject } from '../core/scene'
 import type { SpriteFrame } from '../core/sprite'
 import type { PalPalette } from '../types'
 
@@ -14,6 +15,8 @@ type PalSceneCanvasProps = {
   showGrid: boolean
   selectedTile: PalTileSelection
   selectedEventIndex: number | null
+  eventOverrides?: Record<string, PalEventObject>
+  debugParty?: { x: number; y: number; direction: number }
   onSelectTile: (tile: PalTileSelection) => void
   onSelectEvent: (event: LoadedPalEvent) => void
 }
@@ -50,6 +53,8 @@ export function PalSceneCanvas({
   showGrid,
   selectedTile,
   selectedEventIndex,
+  eventOverrides,
+  debugParty,
   onSelectTile,
   onSelectEvent,
 }: PalSceneCanvasProps) {
@@ -152,8 +157,8 @@ export function PalSceneCanvas({
       }
 
       for (const event of scene.events) {
-        const object = event.object
-        const frame = selectEventFrame(event)
+        const object = eventOverrides?.[String(event.object.index + 1)] ?? event.object
+        const frame = selectEventFrame({ ...event, object })
         const visible = object.state > 0 && object.vanishTime <= 0
         if (frame && visible) {
           overlays.push({
@@ -178,14 +183,34 @@ export function PalSceneCanvas({
 
       // Sprite-less and hidden events remain selectable editor markers.
       for (const event of scene.events) {
-        const object = event.object
-        if (selectEventFrame(event) && object.state > 0 && object.vanishTime <= 0) continue
+        const object = eventOverrides?.[String(event.object.index + 1)] ?? event.object
+        if (selectEventFrame({ ...event, object }) && object.state > 0 && object.vanishTime <= 0) continue
         const x = toScreenX(object.x)
         const y = toScreenY(object.y)
         context.fillStyle = object.index === selectedEventIndex ? '#f0be65' : 'rgba(201, 218, 216, .65)'
         context.beginPath()
         context.arc(x, y, Math.max(3, 5 * zoom), 0, Math.PI * 2)
         context.fill()
+      }
+
+      if (debugParty) {
+        const x = toScreenX(debugParty.x)
+        const y = toScreenY(debugParty.y)
+        context.save()
+        context.translate(x, y)
+        context.rotate((debugParty.direction % 4) * Math.PI / 2)
+        context.fillStyle = '#69b8be'
+        context.strokeStyle = '#d9ffff'
+        context.lineWidth = Math.max(1, 1.5 * zoom)
+        context.beginPath()
+        context.moveTo(0, -Math.max(7, 10 * zoom))
+        context.lineTo(Math.max(6, 8 * zoom), Math.max(5, 7 * zoom))
+        context.lineTo(0, Math.max(2, 4 * zoom))
+        context.lineTo(-Math.max(6, 8 * zoom), Math.max(5, 7 * zoom))
+        context.closePath()
+        context.fill()
+        context.stroke()
+        context.restore()
       }
 
       if (showGrid) {
@@ -227,7 +252,7 @@ export function PalSceneCanvas({
     const observer = new ResizeObserver(draw)
     observer.observe(box)
     return () => observer.disconnect()
-  }, [palette, scene, selectedEventIndex, selectedTile, showGrid, zoom])
+  }, [debugParty, eventOverrides, palette, scene, selectedEventIndex, selectedTile, showGrid, zoom])
 
   const handlePointer = (pointer: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current
@@ -243,7 +268,10 @@ export function PalSceneCanvas({
     const worldY = (pointer.clientY - bounds.top) / zoom - offsetY
 
     const event = scene.events
-      .map((item) => ({ item, distance: Math.hypot(item.object.x - worldX, item.object.y - worldY) }))
+      .map((item) => {
+        const object = eventOverrides?.[String(item.object.index + 1)] ?? item.object
+        return { item, distance: Math.hypot(object.x - worldX, object.y - worldY) }
+      })
       .filter(({ distance }) => distance <= 18 / Math.max(zoom, 0.25))
       .sort((left, right) => left.distance - right.distance)[0]?.item
     if (event) {
@@ -272,7 +300,7 @@ export function PalSceneCanvas({
   return (
     <div className="map-canvas pal-scene-canvas" ref={boxRef}>
       <canvas ref={canvasRef} onPointerDown={handlePointer} />
-      <div className="canvas-hint">真实 MAP/GOP 场景 · 滚动查看 · 点击图块或事件</div>
+      <div className="canvas-hint">{debugParty ? '调试沙盒叠加中 · 青色标记为队伍位置 · 原资源未修改' : '真实 MAP/GOP 场景 · 滚动查看 · 点击图块或事件'}</div>
     </div>
   )
 }
