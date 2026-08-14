@@ -8,7 +8,7 @@ on:
       - '.github/workflows/build-sdlpal-wasm.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -62,8 +62,28 @@ jobs:
           cp runtime/sdlpal/UPSTREAM_REVISION runtime-dist/
           cp runtime/sdlpal/NOTICE.md runtime-dist/
           cp LICENSE runtime-dist/PALFORGE-LICENSE
-          sha256sum runtime-dist/sdlpal.js runtime-dist/sdlpal.wasm > runtime-dist/SHA256SUMS
+          (cd runtime-dist && sha256sum sdlpal.js sdlpal.wasm > SHA256SUMS)
           grep -q PALFORGE_SetLaunchTarget runtime-dist/sdlpal.js
+
+      - name: Install runtime in PalForge
+        run: |
+          mkdir -p public/sdlpal-runtime
+          cp runtime-dist/sdlpal.js runtime-dist/sdlpal.wasm public/sdlpal-runtime/
+          cp runtime-dist/NOTICE.md runtime-dist/PALFORGE-LICENSE public/sdlpal-runtime/
+          cp runtime-dist/UPSTREAM_REVISION runtime-dist/SHA256SUMS public/sdlpal-runtime/
+
+      - name: Commit reproducible runtime to the branch
+        if: github.event_name == 'push'
+        run: |
+          git add public/sdlpal-runtime
+          if git diff --cached --quiet; then
+            echo 'Pinned browser runtime is already up to date.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Update pinned SDLPAL WebAssembly runtime [skip ci]'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - uses: actions/upload-artifact@v4
         with:

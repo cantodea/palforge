@@ -33,14 +33,15 @@ export function createSdlpalLaunchTarget(options: {
   const worldX = options.tile.x * 32 + options.tile.half * 16
   const worldY = options.tile.y * 16 + options.tile.half * 8
   const runTriggerImmediately = options.mode === 'scene-teleport' || options.mode === 'event-trigger'
-  const runAutoImmediately = options.mode === 'event-auto'
   return {
     scene: options.scene,
     worldX,
     worldY,
     eventObjectId: options.eventObjectId,
-    scriptEntry: runTriggerImmediately || runAutoImmediately ? options.entry : 0,
-    scriptMode: runAutoImmediately ? 2 : runTriggerImmediately ? 1 : 0,
+    // Scene-enter and event-auto scripts are already scheduled by the engine.
+    // Replaying an auto entry here would execute it twice during the first frame.
+    scriptEntry: runTriggerImmediately ? options.entry : 0,
+    scriptMode: runTriggerImmediately ? 1 : 0,
     direction: (options.direction ?? 0) & 3,
     label: options.label,
   }

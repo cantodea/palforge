@@ -22,11 +22,11 @@ describe('SDLPAL runner bridge', () => {
     })
   })
 
-  it('lets scene-enter execute naturally and marks auto scripts correctly', () => {
+  it('lets scene-enter and auto scripts execute naturally without a duplicate first frame', () => {
     const sceneEnter = createSdlpalLaunchTarget({ scene: 2, tile: { x: 1, y: 2, half: 1 }, mode: 'scene-enter', entry: 42, eventObjectId: 0, label: 'enter' })
     const auto = createSdlpalLaunchTarget({ scene: 2, tile: { x: 1, y: 2, half: 1 }, mode: 'event-auto', entry: 99, eventObjectId: 8, label: 'auto' })
     expect(sceneEnter).toMatchObject({ worldX: 48, worldY: 40, scriptEntry: 0, scriptMode: 0 })
-    expect(auto).toMatchObject({ scriptEntry: 99, scriptMode: 2 })
+    expect(auto).toMatchObject({ scriptEntry: 0, scriptMode: 0 })
   })
 
   it('normalizes game files and ignores an injected runner control file', () => {

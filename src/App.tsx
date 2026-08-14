@@ -324,7 +324,7 @@ function TopBar({
       <div className="brand">
         <span className="brand-mark"><Hammer size={17} /></span>
         <strong>PalForge</strong>
-        <span className="version">ALPHA 0.6</span>
+        <span className="version">ALPHA 0.7</span>
       </div>
       <div className="breadcrumb">
         <FolderOpen size={14} />

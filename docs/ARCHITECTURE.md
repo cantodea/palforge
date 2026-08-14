@@ -16,7 +16,7 @@
 | Domain model | 场景、单元、事件、脚本、资源引用、项目差异 | PAL 场景、脚本入口、工程脚本覆盖与场景调试快照已实现 |
 | Editor features | 地图、脚本、资源、模块、检查器 | 真实地图/事件查看、工程脚本编辑和场景内调试已实现 |
 | Project codec | `.palforge.json` / 后续压缩工程包的读写与迁移 | version 2 JSON 可保存脚本草稿和编译预览 |
-| Runner bridge | 从工程快照生成临时游戏副本并启动 SDLPAL | 快照模型已实现，进程桥接待开发 |
+| Runner bridge | 把本地资源复制到隔离文件系统并启动 SDLPAL | 浏览器 WASM 场景直达已实现；工程补丁注入与原生进程待开发 |
 | Module SDK | 注册编辑页、事件、资源、存档字段和测试目标 | manifest 模型已实现 |
 
 ## 3. 资源引用
@@ -68,6 +68,17 @@ module://fishing-demo/audio/bite.ogg
 
 ### 5.2 Runner Bridge（后续实现）
 
+浏览器 Runner 的第一阶段已经实现：
+
+1. SDLPAL 固定到 `runtime/sdlpal/UPSTREAM_REVISION`，CI 只在临时 checkout 中应用 PalForge adapter/patch；
+2. 生成的 SDL3 WebAssembly 在同源 sandboxed iframe 中运行，与 React 编辑器生命周期隔离；
+3. 用户选择的 `File` 对象被复制到 Emscripten `/data`，文件名按 SDLPAL Web 端规则转为小写；
+4. React 通过 `postMessage` 发送场景号、世界坐标、事件对象和可选脚本入口；C adapter 在默认新游戏状态初始化后切换目标场景；
+5. 关闭或重启 iframe 会销毁整个 WASM、SDL Canvas 和临时文件系统；原目录句柄没有写操作；
+6. 当前 adapter 使用原始 SSS/M.MSG，工程脚本编译结果尚未写入 SDLPAL 的运行时脚本/消息表。
+
+Windows 原生 Runner 仍按下面的长期流程实现：
+
 1. 编辑器从当前选择建立不可变 `TestSnapshot`。
 2. 快照包含场景、出生点、队伍、物品、剧情标记和可选事件入口。
 3. Runner Bridge 复制基础游戏数据到缓存目录并应用工程差异。
@@ -91,4 +102,4 @@ module://fishing-demo/audio/bite.ogg
 
 ## 7. 接下来最值得先做的工作
 
-`Scene Lens`、`Script Lens`、`Script Forge` 与浏览器 `Scene Debugger` 已形成真实读取 → 工程覆盖 → 追加式编译 → 场景内验证的链路。下一步应实现 Scene Forge，并让 Runner Bridge 只在临时游戏副本中应用 `entryRedirects`、追加脚本与消息，再启动 SDLPAL 做完整战斗、存档、音画和引擎兼容性测试。
+`Scene Lens`、`Script Lens`、`Script Forge`、`Scene Debugger` 与 SDLPAL-WASM Runner 已形成真实读取 → 工程覆盖 → 单步推演 → 原始资源实机运行的链路。下一步应把 `entryRedirects`、追加脚本与消息注入 WASM 临时内存，再实现 Scene Forge 和 Windows 原生 Runner。
