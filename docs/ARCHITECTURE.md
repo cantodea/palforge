@@ -73,7 +73,7 @@ module://fishing-demo/audio/bite.ogg
 1. SDLPAL 固定到 `runtime/sdlpal/UPSTREAM_REVISION`，CI 只在临时 checkout 中应用 PalForge adapter/patch；
 2. 生成的 SDL3 WebAssembly 在同源 sandboxed iframe 中运行，与 React 编辑器生命周期隔离；
 3. 用户选择的 `File` 对象被复制到 Emscripten `/data`，文件名按 SDLPAL Web 端规则转为小写；
-4. React 通过 `postMessage` 发送场景号、世界坐标、事件对象和可选脚本入口；C adapter 在默认新游戏状态初始化后切换目标场景；
+4. React 按 SDLPAL 原生接触触发距离检查出生点并避开门/传送区，再通过 `postMessage` 发送场景号和安全世界坐标；C adapter 在默认新游戏状态初始化后切换目标场景；
 5. 关闭或重启 iframe 会销毁整个 WASM、SDL Canvas 和临时文件系统；原目录句柄没有写操作；
 6. 当前 adapter 使用原始 SSS/M.MSG，工程脚本编译结果尚未写入 SDLPAL 的运行时脚本/消息表。
 

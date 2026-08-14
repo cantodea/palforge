@@ -94,7 +94,12 @@ import {
   type SceneDebugRuntime,
   type SceneDebugSession,
 } from './core/sceneDebugger'
-import { createSdlpalLaunchTarget, type SdlpalLaunchTarget } from './core/sdlpalRunner'
+import {
+  createSdlpalLaunchTarget,
+  findSafeSdlpalSpawn,
+  findSdlpalSpawnHazard,
+  type SdlpalLaunchTarget,
+} from './core/sdlpalRunner'
 import { createTestSnapshot, type TestSnapshot } from './core/tester'
 import { demoMap, demoModules, demoScripts } from './data/demo'
 import type {
@@ -324,7 +329,7 @@ function TopBar({
       <div className="brand">
         <span className="brand-mark"><Hammer size={17} /></span>
         <strong>PalForge</strong>
-        <span className="version">ALPHA 0.7</span>
+        <span className="version">ALPHA 0.7.1</span>
       </div>
       <div className="breadcrumb">
         <FolderOpen size={14} />
@@ -878,9 +883,9 @@ function SceneDebugBench({
           </div>
           <div className="debug-launch-actions">
             <button className="primary-button debug-start" disabled={targets.length === 0} onClick={onStart}><BugPlay size={14} /> 建立脚本推演沙盒</button>
-            <button className="primary-button sdlpal-run-button" disabled={targets.length === 0} onClick={onRunReal}><Gamepad2 size={14} /> 用 SDLPAL 实机运行</button>
+            <button className="primary-button sdlpal-run-button" onClick={onRunReal}><Gamepad2 size={14} /> 从起点实机运行场景</button>
           </div>
-          <p>从当前图块生成队伍位置，复制本场景事件状态；所有变化仅存在于这次调试会话。</p>
+          <p>脚本下拉框只控制推演沙盒；实机运行从当前图块进入场景，不会强制执行所选门或传送事件。</p>
         </div>
         <div className="debug-execution-panel">
           <div className="debug-panel-title"><span className="eyebrow">EXECUTION</span><i className={`debug-status ${session?.status ?? 'idle'} ${running ? 'running' : ''}`}>{statusLabel}</i></div>
@@ -1152,29 +1157,35 @@ export default function App() {
 
   const runCurrentSceneInSdlpal = () => {
     if (!loadedScene) return
-    const target = sceneDebugTargets.find((candidate) => candidate.id === sceneDebugTargetId) ?? sceneDebugTargets[0]
-    if (!target) {
-      setToast('当前场景没有可用于实机启动的脚本目标')
-      return
-    }
     const mountedNames = new Set(resources.filter((resource) => resource.file).map((resource) => resource.name.toUpperCase()))
     const missing = ['SSS.MKF', 'DATA.MKF', 'MAP.MKF', 'GOP.MKF', 'MGO.MKF', 'PAT.MKF'].filter((name) => !mountedNames.has(name))
     if (missing.length > 0) {
       setToast(`SDLPAL 缺少运行资源：${missing.join(', ')}`)
       return
     }
-    const eventDirection = target.eventObjectId > 0
-      ? loadedScene.events.find((event) => event.object.index + 1 === target.eventObjectId)?.object.direction ?? 0
-      : 0
+    const events = loadedScene.events.map((event) => event.object)
+    const hazard = findSdlpalSpawnHazard(realSelectedTile, events)
+    const safeTile = findSafeSdlpalSpawn(loadedScene.map, events, realSelectedTile)
+    if (!safeTile) {
+      setToast('当前场景找不到未阻挡且不在接触触发区内的出生点')
+      return
+    }
+    const adjusted = safeTile.x !== realSelectedTile.x || safeTile.y !== realSelectedTile.y || safeTile.half !== realSelectedTile.half
+    if (adjusted) {
+      setRealSelectedTile(safeTile)
+      setRealSelectedEventIndex(null)
+    }
     setSceneDebugRunning(false)
     setSdlpalLaunchTarget(createSdlpalLaunchTarget({
       scene: loadedScene.record.number,
-      tile: realSelectedTile,
-      mode: target.mode,
-      entry: target.entry,
-      eventObjectId: target.eventObjectId,
-      direction: eventDirection,
-      label: target.label,
+      tile: safeTile,
+      mode: 'scene-enter',
+      entry: loadedScene.record.scriptOnEnter,
+      eventObjectId: 0,
+      direction: 0,
+      label: hazard
+        ? `场景 #${loadedScene.record.number} · 已避开接触事件 #${hazard.eventObjectId}`
+        : `场景 #${loadedScene.record.number} · 自由运行`,
     }))
   }
 
@@ -1199,10 +1210,11 @@ export default function App() {
         y: Math.max(0, Math.min(127, Math.floor((focus.object.y - half * 8) / 16))),
         half,
       } : { x: 0, y: 0, half: 0 }
+      const safeFocusTile = findSafeSdlpalSpawn(scene.map, scene.events.map((event) => event.object), focusTile) ?? focusTile
       setLoadedScene(scene)
       setSelectedSceneNumber(sceneNumber)
-      setRealSelectedTile(focusTile)
-      setRealSelectedEventIndex(focus?.object.index ?? null)
+      setRealSelectedTile(safeFocusTile)
+      setRealSelectedEventIndex(null)
       const scriptReferences = collectSceneScriptReferences(scene.record, scene.events.map((event) => event.object))
       setSelectedRealScriptEntry(scriptReferences[0]?.entry ?? null)
       setTool('select')
