@@ -45,6 +45,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { MapCanvas } from './components/MapCanvas'
 import { PalSceneCanvas, type PalTileSelection } from './components/PalSceneCanvas'
 import { ResourceBrowser } from './components/ResourceBrowser'
+import { SdlpalRunnerDialog } from './components/SdlpalRunnerDialog'
 import { readMkfChunk, readMkfIndex } from './core/mkf'
 import { decodePatChunk } from './core/palette'
 import type { GameProfile } from './core/resourceDecoder'
@@ -93,6 +94,7 @@ import {
   type SceneDebugRuntime,
   type SceneDebugSession,
 } from './core/sceneDebugger'
+import { createSdlpalLaunchTarget, type SdlpalLaunchTarget } from './core/sdlpalRunner'
 import { createTestSnapshot, type TestSnapshot } from './core/tester'
 import { demoMap, demoModules, demoScripts } from './data/demo'
 import type {
@@ -832,6 +834,7 @@ function SceneDebugBench({
   onDecision,
   onOpenCurrent,
   onOpenTargetScene,
+  onRunReal,
 }: {
   open: boolean
   onOpen: () => void
@@ -851,6 +854,7 @@ function SceneDebugBench({
   onDecision: (optionId: string) => void
   onOpenCurrent: () => void
   onOpenTargetScene: () => void
+  onRunReal: () => void
 }) {
   const current = session ? runtime.entries[session.currentEntry] : undefined
   const definition = current ? getPalOpcodeDefinition(current.operation) : undefined
@@ -872,7 +876,10 @@ function SceneDebugBench({
             <span><small>断点</small><b>{breakpoints.length}</b></span>
             <span><small>覆盖层</small><b>{session && session.currentEntry !== session.sourceEntry ? '工程/重定向' : '原始入口'}</b></span>
           </div>
-          <button className="primary-button debug-start" disabled={targets.length === 0} onClick={onStart}><BugPlay size={14} /> 建立场景沙盒</button>
+          <div className="debug-launch-actions">
+            <button className="primary-button debug-start" disabled={targets.length === 0} onClick={onStart}><BugPlay size={14} /> 建立脚本推演沙盒</button>
+            <button className="primary-button sdlpal-run-button" disabled={targets.length === 0} onClick={onRunReal}><Gamepad2 size={14} /> 用 SDLPAL 实机运行</button>
+          </div>
           <p>从当前图块生成队伍位置，复制本场景事件状态；所有变化仅存在于这次调试会话。</p>
         </div>
         <div className="debug-execution-panel">
@@ -994,6 +1001,7 @@ export default function App() {
   const [sceneDebugSession, setSceneDebugSession] = useState<SceneDebugSession | null>(null)
   const [sceneDebugRunning, setSceneDebugRunning] = useState(false)
   const [sceneDebugBreakpoints, setSceneDebugBreakpoints] = useState<number[]>([])
+  const [sdlpalLaunchTarget, setSdlpalLaunchTarget] = useState<SdlpalLaunchTarget | null>(null)
   const [toast, setToast] = useState('')
   const [testSettings, setTestSettings] = useState<TestSettings>({ scene: demoMap.name, spawnX: 7, spawnY: 4, partyLevel: 8, eventId: 'event-01', flags: ['met_ling_er'] })
   const gameInputRef = useRef<HTMLInputElement>(null)
@@ -1142,6 +1150,34 @@ export default function App() {
     ? current.filter((candidate) => candidate !== entry)
     : [...current, entry].sort((left, right) => left - right))
 
+  const runCurrentSceneInSdlpal = () => {
+    if (!loadedScene) return
+    const target = sceneDebugTargets.find((candidate) => candidate.id === sceneDebugTargetId) ?? sceneDebugTargets[0]
+    if (!target) {
+      setToast('当前场景没有可用于实机启动的脚本目标')
+      return
+    }
+    const mountedNames = new Set(resources.filter((resource) => resource.file).map((resource) => resource.name.toUpperCase()))
+    const missing = ['SSS.MKF', 'DATA.MKF', 'MAP.MKF', 'GOP.MKF', 'MGO.MKF', 'PAT.MKF'].filter((name) => !mountedNames.has(name))
+    if (missing.length > 0) {
+      setToast(`SDLPAL 缺少运行资源：${missing.join(', ')}`)
+      return
+    }
+    const eventDirection = target.eventObjectId > 0
+      ? loadedScene.events.find((event) => event.object.index + 1 === target.eventObjectId)?.object.direction ?? 0
+      : 0
+    setSceneDebugRunning(false)
+    setSdlpalLaunchTarget(createSdlpalLaunchTarget({
+      scene: loadedScene.record.number,
+      tile: realSelectedTile,
+      mode: target.mode,
+      entry: target.entry,
+      eventObjectId: target.eventObjectId,
+      direction: eventDirection,
+      label: target.label,
+    }))
+  }
+
   const openRealScene = async (
     sceneNumber: number,
     sourceArchives = archives,
@@ -1174,6 +1210,7 @@ export default function App() {
       setSnapshot(null)
       setSceneDebugSession(null)
       setSceneDebugRunning(false)
+      setSdlpalLaunchTarget(null)
       setToast(`已读取场景 #${sceneNumber} · MAP #${scene.record.mapNumber}`)
     } catch (error) {
       if (token !== sceneLoadTokenRef.current) return
@@ -1443,6 +1480,12 @@ export default function App() {
         }}
         onOpenCurrent={openDebugCurrentScript}
         onOpenTargetScene={() => { if (sceneDebugSession?.nextSceneNumber) void openRealScene(sceneDebugSession.nextSceneNumber) }}
+        onRunReal={runCurrentSceneInSdlpal}
+      />}
+      {sdlpalLaunchTarget && <SdlpalRunnerDialog
+        files={resources.flatMap((resource) => resource.file ? [resource.file] : [])}
+        target={sdlpalLaunchTarget}
+        onClose={() => setSdlpalLaunchTarget(null)}
       />}
       {view === 'map' && !projectMounted && <TestBench open={testOpen} onOpen={() => setTestOpen((value) => !value)} settings={testSettings} onSettings={setTestSettings} events={map.events} onRun={() => { const event = map.events.find((item) => item.id === testSettings.eventId); setSnapshot(createTestSnapshot(testSettings, event)); setToast('独立测试快照已建立') }} snapshot={snapshot} />}
       {toast && <div className="toast"><CircleDot size={14} />{toast}</div>}
