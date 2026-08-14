@@ -494,6 +494,7 @@ function PalSceneInspector({
   scene,
   selectedTile,
   selectedEvent,
+  onOpenResource,
   onOpenScript,
   onDebugScript,
   debugActive,
@@ -501,6 +502,7 @@ function PalSceneInspector({
   scene: LoadedPalScene
   selectedTile: PalTileSelection
   selectedEvent?: LoadedPalEvent
+  onOpenResource: (archiveName: string, chunkIndex: number) => void
   onOpenScript: (entry: number) => void
   onDebugScript: (entry: number, eventObjectId: number, mode: SceneDebugMode) => void
   debugActive: boolean
@@ -536,6 +538,7 @@ function PalSceneInspector({
             <label className="field"><span>方向</span><input value={selectedEvent.object.direction} readOnly /></label>
             <label className="field"><span>当前帧</span><input value={`${selectedEvent.object.currentFrame} / ${selectedEvent.frames.length}`} readOnly /></label>
           </div>
+          <button className="wide-button resource-jump-button" disabled={selectedEvent.object.spriteNumber === 0} onClick={() => onOpenResource('MGO.MKF', selectedEvent.object.spriteNumber)}><Archive size={14} /> 在资源浏览器中打开 MGO #{selectedEvent.object.spriteNumber}</button>
           <div className="script-entry-actions">
             <button className="wide-button" disabled={selectedEvent.object.triggerScript === 0} onClick={() => onOpenScript(selectedEvent.object.triggerScript)}><Code2 size={14} /> 打开触发脚本</button>
             <button className="wide-button" disabled={selectedEvent.object.autoScript === 0} onClick={() => onOpenScript(selectedEvent.object.autoScript)}><Code2 size={14} /> 打开自动脚本</button>
@@ -559,6 +562,10 @@ function PalSceneInspector({
           <div className="meta-list">
             <span><small>资源来源</small><code>MAP/GOP.MKF / #{scene.record.mapNumber}</code></span>
             <span><small>修改状态</small><b className="readonly-status">只读</b></span>
+          </div>
+          <div className="resource-entry-actions">
+            <button className="wide-button resource-jump-button" onClick={() => onOpenResource('MAP.MKF', scene.record.mapNumber)}><Archive size={14} /> 打开 MAP #{scene.record.mapNumber}</button>
+            <button className="wide-button resource-jump-button" onClick={() => onOpenResource('GOP.MKF', scene.record.mapNumber)}><Archive size={14} /> 打开 GOP #{scene.record.mapNumber}</button>
           </div>
           <div className="script-entry-actions">
             <button className="wide-button" disabled={scene.record.scriptOnEnter === 0} onClick={() => onOpenScript(scene.record.scriptOnEnter)}><Code2 size={14} /> 场景进入 {formatPalEntry(scene.record.scriptOnEnter)}</button>
@@ -1028,6 +1035,7 @@ export default function App() {
   const [palettes, setPalettes] = useState<PalPalette[]>([])
   const [mapPaletteKey, setMapPaletteKey] = useState('')
   const [selectedResourcePath, setSelectedResourcePath] = useState('')
+  const [resourceChunkRequest, setResourceChunkRequest] = useState<{ path: string; chunkIndex: number; requestId: number } | null>(null)
   const [gameProfile, setGameProfile] = useState<GameProfile>('auto')
   const [modules, setModules] = useState<ForgeModule[]>(demoModules)
   const [projectMounted, setProjectMounted] = useState(false)
@@ -1044,6 +1052,7 @@ export default function App() {
   const gameInputRef = useRef<HTMLInputElement>(null)
   const assetInputRef = useRef<HTMLInputElement>(null)
   const sceneLoadTokenRef = useRef(0)
+  const resourceRequestIdRef = useRef(0)
   const debugSkipBreakpointOnceRef = useRef(false)
 
   useEffect(() => gameInputRef.current?.setAttribute('webkitdirectory', ''), [])
@@ -1188,6 +1197,17 @@ export default function App() {
   const toggleDebugBreakpoint = (entry: number) => setSceneDebugBreakpoints((current) => current.includes(entry)
     ? current.filter((candidate) => candidate !== entry)
     : [...current, entry].sort((left, right) => left - right))
+
+  const openOriginalResource = (archiveName: string, chunkIndex: number) => {
+    const resource = resources.find((candidate) => candidate.kind === 'mkf' && candidate.name.toUpperCase() === archiveName.toUpperCase())
+    if (!resource) {
+      setToast(`当前目录没有挂载 ${archiveName}`)
+      return
+    }
+    setSelectedResourcePath(resource.path)
+    setResourceChunkRequest({ path: resource.path, chunkIndex, requestId: ++resourceRequestIdRef.current })
+    setView('resources')
+  }
 
   const runCurrentSceneInSdlpal = () => {
     if (!loadedScene) return
@@ -1517,6 +1537,8 @@ export default function App() {
           selectedPath={selectedResourcePath}
           profile={gameProfile}
           sceneCatalog={sceneCatalog}
+          requestedChunk={resourceChunkRequest}
+          onRequestedChunkHandled={() => setResourceChunkRequest(null)}
           onProfile={setGameProfile}
           onSelectResource={setSelectedResourcePath}
           onImport={() => assetInputRef.current?.click()}
@@ -1529,6 +1551,9 @@ export default function App() {
           animations={animationDrafts}
           selectedId={selectedAnimationId}
           resources={resources}
+          palettes={palettes}
+          profile={gameProfile}
+          preferredPaletteKey={mapPaletteKey}
           onAnimations={setAnimationDrafts}
           onSelect={setSelectedAnimationId}
           onOpenOriginal={(path) => { setSelectedResourcePath(path); setView('resources') }}
@@ -1536,7 +1561,7 @@ export default function App() {
         />}
         {view === 'modules' && <ModulesView modules={modules} onToggle={(id) => setModules((current) => current.map((module) => module.id === id ? { ...module, enabled: !module.enabled } : module))} />}
       </main>
-      {view === 'map' && loadedScene && <PalSceneInspector scene={loadedScene} selectedTile={realSelectedTile} selectedEvent={selectedPalEvent} onOpenScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }} onDebugScript={debugScriptInScene} debugActive={Boolean(sceneDebugSession)} />}
+      {view === 'map' && loadedScene && <PalSceneInspector scene={loadedScene} selectedTile={realSelectedTile} selectedEvent={selectedPalEvent} onOpenResource={openOriginalResource} onOpenScript={(entry) => { setSelectedRealScriptEntry(entry); setView('script') }} onDebugScript={debugScriptInScene} debugActive={Boolean(sceneDebugSession)} />}
       {view === 'map' && !projectMounted && <Inspector map={map} selectedTile={selectedTile} selectedEvent={selectedEvent} onEventChange={updateEvent} />}
       {loadedScene && sceneCatalog && <SceneDebugBench
         open={sceneDebugOpen}

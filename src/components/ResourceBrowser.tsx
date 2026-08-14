@@ -22,7 +22,7 @@ import {
   SlidersHorizontal,
   Sun,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatBytes, readMkfChunk, type MkfChunk } from '../core/mkf'
 import { adjustPalette, blendPalettes, grayscalePalette } from '../core/palette'
 import { indexedToRgba } from '../core/rle'
@@ -50,6 +50,8 @@ type ResourceBrowserProps = {
   sceneCatalog: PalSceneCatalog | null
   onOpenScene: (sceneNumber: number, eventObjectIndex?: number) => void
   onOpenScript: (entry: number) => void
+  requestedChunk: { path: string; chunkIndex: number; requestId: number } | null
+  onRequestedChunkHandled: () => void
   onToast: (message: string) => void
 }
 
@@ -175,6 +177,8 @@ export function ResourceBrowser({
   sceneCatalog,
   onOpenScene,
   onOpenScript,
+  requestedChunk,
+  onRequestedChunkHandled,
   onToast,
 }: ResourceBrowserProps) {
   const selected = resources.find((resource) => resource.path === selectedPath) ?? resources.find((resource) => resource.kind === 'mkf')
@@ -252,6 +256,27 @@ export function ResourceBrowser({
     : inspection?.image
   const frameCount = inspection?.kind === 'sprite' ? inspection.frames.length : 0
 
+  const openChunk = useCallback(async (chunk: MkfChunk) => {
+    if (!selected?.file) return
+    setSelectedChunk(chunk.index)
+    setLoading(true)
+    setError('')
+    setFrame(0)
+    setPlaying(false)
+    try {
+      const buffer = await selected.file.slice(chunk.offset, chunk.offset + chunk.size).arrayBuffer()
+      const raw = readMkfChunk(buffer, { ...chunk, offset: 0 })
+      const result = inspectChunk(raw, selected.name, chunk.index, profile)
+      setInspection(result)
+      if (result.palettes?.[0]) setPaletteIndex(result.palettes[0].index)
+    } catch (reason) {
+      setInspection(null)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setLoading(false)
+    }
+  }, [profile, selected])
+
   useEffect(() => {
     setInspection(null)
     setError('')
@@ -261,6 +286,17 @@ export function ResourceBrowser({
     setQuery('')
     setSemanticFilter('all')
   }, [selected?.path])
+
+  useEffect(() => {
+    if (!requestedChunk || requestedChunk.path !== selected?.path) return
+    const chunk = selected.chunkIndex?.[requestedChunk.chunkIndex]
+    if (!chunk || chunk.size === 0) {
+      onToast(`${selected.name} 不存在可打开的 chunk #${requestedChunk.chunkIndex}`)
+      onRequestedChunkHandled()
+      return
+    }
+    void openChunk(chunk).finally(onRequestedChunkHandled)
+  }, [onRequestedChunkHandled, onToast, openChunk, requestedChunk, selected])
 
   useEffect(() => {
     if (!playing || frameCount <= 1) return
@@ -284,27 +320,6 @@ export function ResourceBrowser({
     const rgba = indexedToRgba(image, selectedPalette)
     context.putImageData(new ImageData(rgba, image.width, image.height), 0, 0)
   }, [image, selectedPalette])
-
-  const openChunk = async (chunk: MkfChunk) => {
-    if (!selected?.file) return
-    setSelectedChunk(chunk.index)
-    setLoading(true)
-    setError('')
-    setFrame(0)
-    setPlaying(false)
-    try {
-      const buffer = await selected.file.slice(chunk.offset, chunk.offset + chunk.size).arrayBuffer()
-      const raw = readMkfChunk(buffer, { ...chunk, offset: 0 })
-      const result = inspectChunk(raw, selected.name, chunk.index, profile)
-      setInspection(result)
-      if (result.palettes?.[0]) setPaletteIndex(result.palettes[0].index)
-    } catch (reason) {
-      setInspection(null)
-      setError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const resetPalette = () => {
     setNightMix(0)

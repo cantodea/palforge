@@ -78,6 +78,8 @@ Animation Forge 不写 PAL 的 sprite/RLE 或 MKF 格式。自定义动画存在
 
 标准动画包标记为 `format: "palforge-animation-pack"`、`version: 1`。解析器会拒绝错误版本、不属于 `project://` 的 URI、远程图片 URL 和越界帧；同 ID 包重新导入时更新工程副本，不触碰任何原版 chunk。
 
+原版资源派生流程是 `MKF chunk → 解压/识别 → 索引色帧 → 指定 PAT 调色板 → PNG 工程帧`。PAL sprite 会保留全部已解码帧，RLE/FBP 生成单帧动画，`source.originalUri` 记录来源 chunk。RNG 需要从增量指令重建连续画面，当前解码器尚未实现这一阶段，因此导入器会拒绝它并显示原因。
+
 精灵表导出由 PNG 与 `palforge-sprite-sheet` version 1 JSON 组成。JSON 保存网格单元、每帧实际宽高、时长和锚点。它是将来资源绑定器的交换格式，不是对 MGO/RNG/MKF 的原地补丁。
 
 ## 事件脚本读取

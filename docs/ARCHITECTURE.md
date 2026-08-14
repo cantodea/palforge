@@ -40,7 +40,7 @@ module://fishing-demo/audio/bite.ogg
 | `forge://` | 工程扩展文件 | 可替换 | 独立图片、音频和数据文件 |
 | `module://` | 扩展模块 | 按 manifest 管理 | 模块私有资源 |
 
-Animation Forge 导入图片时只把像素写入 `project://animations/{id}` 的工程帧。原版条目只作为 `pal://` 引用显示；即使未来从原版帧派生新动画，也会保留 `source.originalUri` 并把修改后的像素存入工程层，不覆写源 chunk。
+Animation Forge 导入图片时只把像素写入 `project://animations/{id}` 的工程帧。从原版 sprite、RLE 或 FBP 派生动画时，资源浏览器先解码索引色帧，再用用户选择的 PAT 调色板转成工程 PNG；新动画保留 `source.originalUri`，所有后续修改仍写入工程层，不覆写源 chunk。RNG 的增量帧重建尚未实现，因此不会进入派生管线。
 
 资源浏览器的语义索引同样不修改原版归档。`resourceSemantics.ts` 从当前挂载目录已经解析出的场景、事件与脚本模型生成反向引用：场景地图号关联 `MAP/GOP`，事件精灵号关联 `MGO`，已知资源操作码关联 `MGO/RNG/FBP`。索引使用 `pal://archives/{archive}/chunks/{index}` 作为稳定键；“未发现引用”只说明当前关系表没有命中，不能据此删除原始 chunk。
 
@@ -50,6 +50,7 @@ Animation Forge 导入图片时只把像素写入 `project://animations/{id}` �
 
 - 动画记录稳定 `project://` URI、循环策略、来源和创建/更新时间；
 - 每帧记录独立 Data URL、尺寸、持续时间和锚点；
+- 派生动画记录只读 `pal://archives/{archive}/chunks/{index}` 来源，但包内只保存转换后的工程帧；
 - `.palforge-animation.json` 使用 `palforge-animation-pack` 包装一个或多个动画，导入时按稳定 ID 合并；
 - 精灵表导出将透明 PNG 与布局 JSON 分开，布局保留每帧原始尺寸、位置、时长和锚点；
 - pack 与精灵表都不会包含 `pal://` 原始字节，也不是 MKF 写回格式。

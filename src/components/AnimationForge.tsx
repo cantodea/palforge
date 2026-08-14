@@ -8,13 +8,17 @@ import {
   FileUp,
   Film,
   ImagePlus,
+  LoaderCircle,
   LockKeyhole,
+  Palette,
   PackagePlus,
   Pause,
   Play,
   Plus,
   Repeat2,
+  Search,
   Trash2,
+  X,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -33,18 +37,28 @@ import {
   type ForgeAnimationFrame,
   type ForgeAnimationFrameInput,
 } from '../core/animationProject'
-import { formatBytes } from '../core/mkf'
-import type { ImportedResource } from '../types'
+import { formatBytes, readMkfChunk } from '../core/mkf'
+import { collectImportableOriginalFrames, createDerivedOriginalAnimation } from '../core/originalAnimation'
+import { grayscalePalette } from '../core/palette'
+import { inspectChunk, type GameProfile } from '../core/resourceDecoder'
+import { indexedToRgba } from '../core/rle'
+import type { ImportedResource, IndexedImage, PalPalette } from '../types'
 
 type AnimationForgeProps = {
   animations: ForgeAnimationDraft[]
   selectedId: string
   resources: ImportedResource[]
+  palettes: PalPalette[]
+  profile: GameProfile
+  preferredPaletteKey: string
   onAnimations: (animations: ForgeAnimationDraft[]) => void
   onSelect: (id: string) => void
   onOpenOriginal: (path: string) => void
   onToast: (message: string) => void
 }
+
+const ORIGINAL_VISUAL_ARCHIVE = /^(ABC|BALL|F|FBP|FIRE|MGO|RGM|RNG)\.MKF$/i
+const DIRECT_IMPORT_ARCHIVE = /^(ABC|BALL|F|FBP|FIRE|MGO|RGM)\.MKF$/i
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
@@ -77,6 +91,16 @@ function loadImage(source: string): Promise<HTMLImageElement> {
   })
 }
 
+function indexedImageToPngDataUrl(image: IndexedImage, palette: PalPalette): string {
+  const canvas = document.createElement('canvas')
+  canvas.width = image.width
+  canvas.height = image.height
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('浏览器无法建立原版帧转换画布')
+  context.putImageData(new ImageData(indexedToRgba(image, palette), image.width, image.height), 0, 0)
+  return canvas.toDataURL('image/png')
+}
+
 async function filesToFrames(files: File[]): Promise<ForgeAnimationFrameInput[]> {
   const sorted = [...files].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }))
   return Promise.all(sorted.map(async (file) => {
@@ -104,6 +128,9 @@ export function AnimationForge({
   animations,
   selectedId,
   resources,
+  palettes,
+  profile,
+  preferredPaletteKey,
   onAnimations,
   onSelect,
   onOpenOriginal,
@@ -112,6 +139,13 @@ export function AnimationForge({
   const selected = animations.find((animation) => animation.id === selectedId) ?? animations[0]
   const [frameId, setFrameId] = useState('')
   const [playing, setPlaying] = useState(false)
+  const [originalImportOpen, setOriginalImportOpen] = useState(false)
+  const [originalResourcePath, setOriginalResourcePath] = useState('')
+  const [originalChunkIndex, setOriginalChunkIndex] = useState(0)
+  const [originalChunkQuery, setOriginalChunkQuery] = useState('')
+  const [originalPaletteKey, setOriginalPaletteKey] = useState('')
+  const [originalImporting, setOriginalImporting] = useState(false)
+  const [originalImportError, setOriginalImportError] = useState('')
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const newImagesRef = useRef<HTMLInputElement>(null)
   const appendImagesRef = useRef<HTMLInputElement>(null)
@@ -119,7 +153,17 @@ export function AnimationForge({
 
   const selectedFrameIndex = selected ? Math.max(0, selected.frames.findIndex((frame) => frame.id === frameId)) : 0
   const selectedFrame = selected?.frames[selectedFrameIndex]
-  const originalResources = useMemo(() => resources.filter((resource) => resource.kind === 'mkf' && /^(MGO|RNG|BALL|FIRE|FBP)\.MKF$/i.test(resource.name)), [resources])
+  const originalResources = useMemo(() => resources.filter((resource) => resource.kind === 'mkf' && ORIGINAL_VISUAL_ARCHIVE.test(resource.name)), [resources])
+  const originalResource = originalResources.find((resource) => resource.path === originalResourcePath) ?? originalResources[0]
+  const originalChunks = useMemo(() => (originalResource?.chunkIndex ?? []).filter((chunk) => {
+    if (chunk.size === 0) return false
+    const query = originalChunkQuery.trim().replace(/^#/, '')
+    return !query || String(chunk.index).includes(query) || String(chunk.index).padStart(4, '0').includes(query)
+  }), [originalChunkQuery, originalResource?.chunkIndex])
+  const originalPaletteOptions = palettes.length > 0 ? palettes : [grayscalePalette()]
+  const resolvedOriginalPaletteKey = originalPaletteOptions.some((palette) => `${palette.index}:${palette.variant}` === originalPaletteKey)
+    ? originalPaletteKey
+    : `${originalPaletteOptions[0].index}:${originalPaletteOptions[0].variant}`
 
   useEffect(() => {
     if (selected && selected.id !== selectedId) onSelect(selected.id)
@@ -184,6 +228,64 @@ export function AnimationForge({
     onAnimations([...animations, animation])
     onSelect(animation.id)
     onToast(`已创建 ${animation.uri}`)
+  }
+
+  const selectOriginalArchive = (path: string) => {
+    const resource = originalResources.find((candidate) => candidate.path === path)
+    setOriginalResourcePath(path)
+    setOriginalChunkIndex(resource?.chunkIndex?.find((chunk) => chunk.size > 0)?.index ?? 0)
+    setOriginalChunkQuery('')
+    setOriginalImportError('')
+  }
+
+  const openOriginalImporter = (path?: string) => {
+    const resource = originalResources.find((candidate) => candidate.path === path) ?? originalResources[0]
+    if (!resource) {
+      onToast('请先挂载包含 MGO、FIRE、BALL 等文件的 PAL 游戏目录')
+      return
+    }
+    const preferred = originalPaletteOptions.some((palette) => `${palette.index}:${palette.variant}` === preferredPaletteKey)
+      ? preferredPaletteKey
+      : `${originalPaletteOptions[0].index}:${originalPaletteOptions[0].variant}`
+    setOriginalResourcePath(resource.path)
+    setOriginalChunkIndex(resource.chunkIndex?.find((chunk) => chunk.size > 0)?.index ?? 0)
+    setOriginalChunkQuery('')
+    setOriginalPaletteKey(preferred)
+    setOriginalImportError('')
+    setOriginalImportOpen(true)
+  }
+
+  const importOriginalChunk = async () => {
+    if (!originalResource?.file || !originalResource.chunkIndex) return
+    if (!DIRECT_IMPORT_ARCHIVE.test(originalResource.name)) {
+      setOriginalImportError('RNG 使用增量动画格式；当前解码器尚不能安全复制它的完整帧序列')
+      return
+    }
+    const chunk = originalResource.chunkIndex[originalChunkIndex]
+    if (!chunk || chunk.size === 0) {
+      setOriginalImportError(`${originalResource.name} 不存在非空 chunk #${originalChunkIndex}`)
+      return
+    }
+    setOriginalImporting(true)
+    setOriginalImportError('')
+    try {
+      const buffer = await originalResource.file.slice(chunk.offset, chunk.offset + chunk.size).arrayBuffer()
+      const raw = readMkfChunk(buffer, { ...chunk, offset: 0 })
+      const inspection = inspectChunk(raw, originalResource.name, chunk.index, profile)
+      const sources = collectImportableOriginalFrames(inspection)
+      const palette = originalPaletteOptions.find((candidate) => `${candidate.index}:${candidate.variant}` === resolvedOriginalPaletteKey) ?? grayscalePalette()
+      const rendered = sources.map((source) => indexedImageToPngDataUrl(source.image, palette))
+      const animation = createDerivedOriginalAnimation(inspection, rendered, animations)
+      onAnimations([...animations, animation])
+      onSelect(animation.id)
+      setFrameId(animation.frames[0]?.id ?? '')
+      setOriginalImportOpen(false)
+      onToast(`已从 ${animation.source.originalUri} 复制 ${animation.frames.length} 帧；原版保持只读`)
+    } catch (error) {
+      setOriginalImportError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setOriginalImporting(false)
+    }
   }
 
   const importImages = async (files: File[], append: boolean) => {
@@ -283,6 +385,7 @@ export function AnimationForge({
       <div className="view-titlebar animation-titlebar">
         <div><span className="view-icon violet"><Film size={18} /></span><div><strong>Animation Forge</strong><small>原版只读引用 + project:// 工程动画</small></div></div>
         <div>
+          <button className="toolbar-button original-import-button" disabled={originalResources.length === 0} onClick={() => openOriginalImporter()}><Archive size={14} /> 导入原版资源</button>
           <button className="toolbar-button" onClick={() => packInputRef.current?.click()}><FileUp size={14} /> 导入动画包</button>
           <button className="toolbar-button" onClick={() => newImagesRef.current?.click()}><ImagePlus size={14} /> 导入图片为动画</button>
           <button className="primary-button" onClick={createTemplate}><Plus size={14} /> 新建模板</button>
@@ -293,7 +396,7 @@ export function AnimationForge({
         <aside className="animation-library-panel">
           <section>
             <header><span><LockKeyhole size={13} /> 原版素材</span><i>READ ONLY</i></header>
-            <p>这些 URI 只指向已挂载的 PAL 文件，不会进入工程动画包。</p>
+            <p>点击归档可浏览原件；“导入原版资源”会复制指定 chunk 到 project:// 工程层。</p>
             <div className="animation-source-list">
               {originalResources.length ? originalResources.map((resource) => (
                 <button key={resource.path} onClick={() => onOpenOriginal(resource.path)}>
@@ -369,6 +472,52 @@ export function AnimationForge({
           </> : <div className="animation-inspector-empty">选择或创建一个 project:// 动画以查看属性。</div>}
         </aside>
       </div>
+
+      {originalImportOpen && <div className="original-import-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !originalImporting) setOriginalImportOpen(false) }}>
+        <section className="original-import-dialog">
+          <header>
+            <div><span><Archive size={17} /></span><div><small>READ-ONLY SOURCE → PROJECT COPY</small><strong>导入原版资源</strong></div></div>
+            <button className="icon-button" disabled={originalImporting} onClick={() => setOriginalImportOpen(false)}><X size={15} /></button>
+          </header>
+          <div className="original-import-body">
+            <aside>
+              <span className="eyebrow">VISUAL ARCHIVES</span>
+              <div>{originalResources.map((resource) => {
+                const supported = DIRECT_IMPORT_ARCHIVE.test(resource.name)
+                return <button key={resource.path} className={`${resource.path === originalResource?.path ? 'active' : ''} ${supported ? '' : 'unsupported'}`} onClick={() => selectOriginalArchive(resource.path)}>
+                  <Archive size={14} /><span><strong>{resource.name}</strong><small>{supported ? '可复制为工程帧' : '增量格式待支持'}</small></span><em>{resource.chunkIndex?.length ?? 0}</em>
+                </button>
+              })}</div>
+            </aside>
+            <main>
+              <div className="original-import-heading">
+                <span><strong>{originalResource?.name ?? '未选择归档'}</strong><code>pal://archives/{originalResource?.name.toUpperCase() ?? 'UNKNOWN'}/chunks/{originalChunkIndex}</code></span>
+                <i className={DIRECT_IMPORT_ARCHIVE.test(originalResource?.name ?? '') ? '' : 'unsupported'}>{DIRECT_IMPORT_ARCHIVE.test(originalResource?.name ?? '') ? 'COPY SUPPORTED' : 'NOT YET DECODABLE'}</i>
+              </div>
+              <div className="original-import-fields">
+                <label className="field"><span>Chunk 编号</span><input type="number" min={0} max={Math.max(0, (originalResource?.chunkIndex?.length ?? 1) - 1)} value={originalChunkIndex} onChange={(event) => { setOriginalChunkIndex(Math.max(0, Math.round(Number(event.target.value) || 0))); setOriginalImportError('') }} /></label>
+                <label className="field"><span><Palette size={12} /> 烘焙调色板</span><select value={resolvedOriginalPaletteKey} onChange={(event) => setOriginalPaletteKey(event.target.value)}>{originalPaletteOptions.map((palette) => <option key={`${palette.index}:${palette.variant}`} value={`${palette.index}:${palette.variant}`}>{palette.index < 0 ? '灰度回退' : `PAT #${palette.index} · ${palette.variant === 'night' ? '夜间' : '日间'}`}</option>)}</select></label>
+              </div>
+              <label className="original-chunk-search"><Search size={13} /><input value={originalChunkQuery} onChange={(event) => setOriginalChunkQuery(event.target.value)} placeholder="搜索 chunk 编号…" /></label>
+              <div className="original-chunk-list">
+                {originalChunks.map((chunk) => <button key={chunk.index} className={chunk.index === originalChunkIndex ? 'active' : ''} onClick={() => { setOriginalChunkIndex(chunk.index); setOriginalImportError('') }}><span><b>#{String(chunk.index).padStart(4, '0')}</b><small>0x{chunk.offset.toString(16).padStart(8, '0')}</small></span><em>{formatBytes(chunk.size)}</em></button>)}
+                {originalChunks.length === 0 && <div><Search size={20} /><span>没有符合条件的非空 chunk</span></div>}
+              </div>
+              <div className={`original-import-note ${originalImportError ? 'error' : ''}`}>
+                {originalImportError
+                  ? <><strong>无法导入</strong><span>{originalImportError}</span></>
+                  : DIRECT_IMPORT_ARCHIVE.test(originalResource?.name ?? '')
+                    ? <><strong>将建立独立工程副本</strong><span>sprite 会复制全部可解码帧；RLE/FBP 会成为单帧动画。颜色按当前调色板烘焙为 PNG，源 MKF 不会改变。</span></>
+                    : <><strong>RNG 暂时只可浏览</strong><span>RNG 需要增量帧合成器，不能把未还原的数据冒充完整动画帧。</span></>}
+              </div>
+            </main>
+          </div>
+          <footer>
+            <span><LockKeyhole size={13} /> 原版永久只读；导入结果保存到 project://</span>
+            <div><button className="toolbar-button" disabled={originalImporting} onClick={() => setOriginalImportOpen(false)}>取消</button><button className="primary-button" disabled={originalImporting || !DIRECT_IMPORT_ARCHIVE.test(originalResource?.name ?? '')} onClick={() => void importOriginalChunk()}>{originalImporting ? <LoaderCircle className="spin" size={14} /> : <CopyPlus size={14} />} 复制到动画工程</button></div>
+          </footer>
+        </section>
+      </div>}
     </div>
   )
 }
