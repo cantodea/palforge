@@ -1554,6 +1554,9 @@ export default function App() {
           palettes={palettes}
           profile={gameProfile}
           preferredPaletteKey={mapPaletteKey}
+          sceneEvent={selectedPalEventSource && { spriteNumber: selectedPalEventSource.object.spriteNumber, label: `事件 #${selectedPalEventSource.object.index + 1}` }}
+          canRun={Boolean(loadedScene)}
+          onRun={runCurrentSceneInSdlpal}
           onAnimations={setAnimationDrafts}
           onSelect={setSelectedAnimationId}
           onOpenOriginal={(path) => { setSelectedResourcePath(path); setView('resources') }}
@@ -1595,7 +1598,10 @@ export default function App() {
         onRunReal={runCurrentSceneInSdlpal}
       />}
       {sdlpalLaunchTarget && <SdlpalRunnerDialog
-        files={resources.flatMap((resource) => resource.file ? [resource.file] : [])}
+        resources={resources}
+        animations={animationDrafts}
+        palettes={palettes}
+        profile={gameProfile}
         target={sdlpalLaunchTarget}
         onClose={() => setSdlpalLaunchTarget(null)}
       />}

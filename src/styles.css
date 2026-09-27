@@ -1,3 +1,16 @@
+.animation-binding-panel { margin: 12px 0; padding: 12px 0; border-top: 1px solid #2c3c47; border-bottom: 1px solid #2c3c47; }
+.animation-binding-panel header { display: flex; align-items: center; gap: 7px; margin-bottom: 12px; color: #e8ae50; }
+.animation-binding-panel p { font-size: 11px; line-height: 1.65; color: #9bb0b4; }
+.animation-binding-panel .wide-button { margin-top: 8px; white-space: normal; height: auto; min-height: 32px; }
+.binding-status { display: grid; gap: 5px; padding: 9px; background: #112c2b; border-radius: 5px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.binding-status.error { color: #ffc5b8; background: #392622; }
+.runner-replacement-toggle { margin: 0 12px; }
+.runner-replacement-list { padding: 0 14px; max-height: 150px; overflow: auto; }
+.runner-replacement-list p { display: grid; gap: 4px; font-size: 11px; overflow-wrap: anywhere; }
+.runner-replacement-list span { color: #9bb0b4; }
+.animation-stage-toolbar { flex-wrap: wrap; padding-top: 5px !important; padding-bottom: 5px !important; }
+.animation-stage-toolbar > div { flex-wrap: wrap; }
+.animation-frame-actions { flex-wrap: wrap; }
 :root {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;

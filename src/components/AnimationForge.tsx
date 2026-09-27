@@ -43,6 +43,7 @@ import { grayscalePalette } from '../core/palette'
 import { inspectChunk, type GameProfile } from '../core/resourceDecoder'
 import { indexedToRgba } from '../core/rle'
 import type { ImportedResource, IndexedImage, PalPalette } from '../types'
+import { AnimationBindingPanel, type AnimationSceneEvent } from './AnimationBindingPanel'
 
 type AnimationForgeProps = {
   animations: ForgeAnimationDraft[]
@@ -51,6 +52,9 @@ type AnimationForgeProps = {
   palettes: PalPalette[]
   profile: GameProfile
   preferredPaletteKey: string
+  sceneEvent?: AnimationSceneEvent
+  canRun: boolean
+  onRun: () => void
   onAnimations: (animations: ForgeAnimationDraft[]) => void
   onSelect: (id: string) => void
   onOpenOriginal: (path: string) => void
@@ -104,8 +108,9 @@ function indexedImageToPngDataUrl(image: IndexedImage, palette: PalPalette): str
 async function filesToFrames(files: File[]): Promise<ForgeAnimationFrameInput[]> {
   const sorted = [...files].sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }))
   return Promise.all(sorted.map(async (file) => {
-    if (!file.type.startsWith('image/') && !/\.(?:png|webp|jpe?g)$/i.test(file.name)) throw new Error(`${file.name} 不是浏览器支持的图像`)
+    if (!/^(image\/png|image\/webp|image\/jpeg)$/.test(file.type) && !/\.(?:png|webp|jpe?g)$/i.test(file.name)) throw new Error(`${file.name} 不是 PNG、WebP 或 JPEG 图片帧；GIF/视频请先导出为图片序列`)
     const dataUrl = await readDataUrl(file)
+    if (!/^data:image\/(?:png|webp|jpeg);base64,/i.test(dataUrl)) throw new Error(`${file.name} 的图片类型不受动画包支持`)
     const image = await loadImage(dataUrl)
     if (image.naturalWidth > 8192 || image.naturalHeight > 8192) throw new Error(`${file.name} 超过单帧 8192 × 8192 限制`)
     return {
@@ -131,6 +136,9 @@ export function AnimationForge({
   palettes,
   profile,
   preferredPaletteKey,
+  sceneEvent,
+  canRun,
+  onRun,
   onAnimations,
   onSelect,
   onOpenOriginal,
@@ -149,6 +157,8 @@ export function AnimationForge({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const newImagesRef = useRef<HTMLInputElement>(null)
   const appendImagesRef = useRef<HTMLInputElement>(null)
+  const replaceImagesRef = useRef<HTMLInputElement>(null)
+  const replaceFrameRef = useRef<HTMLInputElement>(null)
   const packInputRef = useRef<HTMLInputElement>(null)
 
   const selectedFrameIndex = selected ? Math.max(0, selected.frames.findIndex((frame) => frame.id === frameId)) : 0
@@ -288,15 +298,24 @@ export function AnimationForge({
     }
   }
 
-  const importImages = async (files: File[], append: boolean) => {
+  const importImages = async (files: File[], mode: 'new' | 'append' | 'replace' | 'frame') => {
     if (!files.length) return
     try {
       const frames = await filesToFrames(files)
-      const base = append && selected ? selected : createForgeAnimationDraft(files[0].name.replace(/\.[^.]+$/, ''), animations)
+      if (mode === 'frame' && selected && selectedFrame) {
+        const updated = { ...selected, updatedAt: Date.now(), frames: selected.frames.map((frame) => frame.id === selectedFrame.id
+          ? { ...frames[0], id: frame.id, durationMs: frame.durationMs } : frame) }
+        onAnimations(replaceAnimation(animations, updated))
+        setPlaying(false)
+        onToast(`已替换第 ${selectedFrameIndex + 1} 帧；保留原帧位和时长`)
+        return
+      }
+      const base = mode !== 'new' && selected ? { ...selected, frames: mode === 'replace' ? [] : selected.frames } : createForgeAnimationDraft(files[0].name.replace(/\.[^.]+$/, ''), animations)
       const updated = addForgeAnimationFrames(base, frames)
-      onAnimations(append && selected ? replaceAnimation(animations, updated) : [...animations, updated])
+      onAnimations(mode !== 'new' && selected ? replaceAnimation(animations, updated) : [...animations, updated])
       onSelect(updated.id)
-      setFrameId(updated.frames[append && selected ? selected.frames.length : 0]?.id ?? '')
+      setPlaying(false)
+      setFrameId(updated.frames[mode === 'append' && selected ? selected.frames.length : 0]?.id ?? '')
       onToast(`已导入 ${frames.length} 帧到 ${updated.uri}`)
     } catch (error) {
       onToast(error instanceof Error ? error.message : String(error))
@@ -378,8 +397,10 @@ export function AnimationForge({
 
   return (
     <div className="workspace-view animation-forge-view">
-      <input ref={newImagesRef} hidden type="file" multiple accept="image/png,image/webp,image/jpeg" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; void importImages(files, false) }} />
-      <input ref={appendImagesRef} hidden type="file" multiple accept="image/png,image/webp,image/jpeg" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; void importImages(files, true) }} />
+      <input ref={newImagesRef} hidden type="file" multiple accept="image/png,image/webp,image/jpeg" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; void importImages(files, 'new') }} />
+      <input ref={appendImagesRef} hidden type="file" multiple accept="image/png,image/webp,image/jpeg" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; void importImages(files, 'append') }} />
+      <input ref={replaceImagesRef} hidden type="file" multiple accept="image/png,image/webp,image/jpeg" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; void importImages(files, 'replace') }} />
+      <input ref={replaceFrameRef} hidden type="file" accept="image/png,image/webp,image/jpeg" onChange={(event) => { const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ''; void importImages(files, 'frame') }} />
       <input ref={packInputRef} hidden type="file" accept=".palforge-animation.json,.json,application/json" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void importPack(file) }} />
 
       <div className="view-titlebar animation-titlebar">
@@ -425,6 +446,7 @@ export function AnimationForge({
               <span><b>{selected.name}</b><code>{selected.uri}</code></span>
               <div>
                 <button className="toolbar-button" onClick={() => appendImagesRef.current?.click()}><PackagePlus size={14} /> 添加帧</button>
+                <button className="toolbar-button" onClick={() => replaceImagesRef.current?.click()}><ImagePlus size={14} /> 替换全部帧</button>
                 <button className="toolbar-button" disabled={selected.frames.length === 0} onClick={exportSpriteSheet}><Download size={14} /> 导出精灵表</button>
                 <button className="primary-button" onClick={exportPack}><FileDown size={14} /> 导出动画包</button>
               </div>
@@ -447,7 +469,7 @@ export function AnimationForge({
                 </button>
               ))}
             </div>
-          </> : <div className="animation-welcome"><span><Film size={36} /></span><h2>建立工程层动画</h2><p>从图片创建全新动画；原版资源仍停留在只读层，二者以后通过统一资源 URI 被场景和事件共同引用。</p><div><button className="primary-button" onClick={createTemplate}><Plus size={14} /> 新建动画模板</button><button className="toolbar-button" onClick={() => newImagesRef.current?.click()}><ImagePlus size={14} /> 导入图片帧</button></div></div>}
+          </> : <div className="animation-welcome"><span><Film size={36} /></span><h2>导入自己的动画并实机测试</h2><p>导入图片帧，在右侧绑定原版精灵，再从当前场景启动 SDLPAL 查看替换效果。</p><div><button className="primary-button" onClick={createTemplate}><Plus size={14} /> 新建动画模板</button><button className="toolbar-button" onClick={() => newImagesRef.current?.click()}><ImagePlus size={14} /> 导入图片帧</button></div></div>}
         </section>
 
         <aside className="animation-inspector-panel">
@@ -456,12 +478,15 @@ export function AnimationForge({
             <label className="field"><span>动画名称</span><input value={selected.name} onChange={(event) => updateSelected(updateForgeAnimation(selected, { name: event.target.value }))} /></label>
             <label className="field"><span>资源来源</span><input value={selected.source.kind === 'custom' ? '自定义工程资源' : `派生自 ${selected.source.originalUri}`} readOnly /></label>
             <label className="field switch-field"><span><b>循环播放</b><small>导出到清单的默认播放策略</small></span><input type="checkbox" checked={selected.loop} onChange={(event) => updateSelected(updateForgeAnimation(selected, { loop: event.target.checked }))} /></label>
+            <AnimationBindingPanel key={selected.id} animation={selected} animations={animations} resources={resources} palettes={palettes} profile={profile}
+              preferredPaletteKey={preferredPaletteKey} sceneEvent={sceneEvent} canRun={canRun} onRun={onRun} onChange={updateSelected} />
             {selectedFrame ? <div className="animation-frame-inspector">
               <div className="animation-frame-card"><span>{selectedFrameIndex + 1}</span><div><strong>{selectedFrame.name}</strong><small>{selectedFrame.id}</small></div></div>
               <label className="field"><span>帧名称</span><input value={selectedFrame.name} onChange={(event) => patchFrame({ name: event.target.value })} /></label>
               <label className="field"><span>持续时间（ms）</span><input type="number" min={16} max={60000} value={selectedFrame.durationMs} onChange={(event) => patchFrame({ durationMs: Math.min(60000, Math.max(16, Math.round(Number(event.target.value) || 16))) })} /></label>
               <div className="field-row"><label className="field"><span>锚点 X</span><input type="number" min={-8192} max={8192} value={selectedFrame.anchorX} onChange={(event) => patchFrame({ anchorX: Math.min(8192, Math.max(-8192, Math.round(Number(event.target.value) || 0))) })} /></label><label className="field"><span>锚点 Y</span><input type="number" min={-8192} max={8192} value={selectedFrame.anchorY} onChange={(event) => patchFrame({ anchorY: Math.min(8192, Math.max(-8192, Math.round(Number(event.target.value) || 0))) })} /></label></div>
               <div className="animation-frame-actions">
+                <button className="toolbar-button" onClick={() => replaceFrameRef.current?.click()}><ImagePlus size={14} /> 替换当前帧</button>
                 <button className="icon-button" title="前移" disabled={selectedFrameIndex === 0} onClick={() => updateSelected(moveForgeAnimationFrame(selected, selectedFrame.id, -1))}><ArrowUp size={14} /></button>
                 <button className="icon-button" title="后移" disabled={selectedFrameIndex === selected.frames.length - 1} onClick={() => updateSelected(moveForgeAnimationFrame(selected, selectedFrame.id, 1))}><ArrowDown size={14} /></button>
                 <button className="toolbar-button" onClick={() => updateSelected(duplicateForgeAnimationFrame(selected, selectedFrame.id))}><CopyPlus size={14} /> 复制帧</button>

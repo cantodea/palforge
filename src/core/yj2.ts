@@ -143,3 +143,37 @@ export function decompressYj2(bytes: Uint8Array): Uint8Array {
   if (destination !== outputLength) throw new Yj2FormatError(`YJ_2 解压长度不符：预期 ${outputLength}，实际 ${destination}`)
   return output
 }
+
+/** Literal-only adaptive Huffman encoder. Compression ratio is secondary for
+ * ephemeral runtime sprites; the native decoder still needs the end marker. */
+export function encodeYj2(input: Uint8Array): Uint8Array {
+  if (input.length === 0 || input.length > 256 * 1024 * 1024) throw new Yj2FormatError('YJ_2 输入长度无效')
+  const output: number[] = [input.length & 255, (input.length >>> 8) & 255, (input.length >>> 16) & 255, input.length >>> 24]
+  const { nodes, leaves } = createTree()
+  let bit = 0
+  const writeBit = (value: number) => {
+    const offset = 4 + (bit >>> 3)
+    if (offset === output.length) output.push(0)
+    output[offset] |= value << (bit & 7)
+    bit += 1
+  }
+  const writeSymbol = (symbol: number) => {
+    const path: number[] = []
+    for (let current = leaves[symbol]; current !== 0x280; current = nodes[current].parent) {
+      path.push(nodes[nodes[current].parent].right === current ? 1 : 0)
+    }
+    for (let index = path.length - 1; index >= 0; index -= 1) writeBit(path[index])
+    if (nodes[0x280].weight === 0x8000) {
+      for (let value = 0; value < 0x141; value += 1) {
+        if ((nodes[leaves[value]].weight & 1) !== 0) adjustTree(nodes, leaves, value)
+      }
+      for (const node of nodes) node.weight >>>= 1
+    }
+    adjustTree(nodes, leaves, symbol)
+  }
+  for (const byte of input) writeSymbol(byte)
+  writeSymbol(0x100)
+  // Distance code 0xFFF terminates native YJ_2: low byte 0, then six 1s.
+  for (let index = 0; index < 14; index += 1) writeBit(index < 8 ? 0 : 1)
+  return new Uint8Array(output)
+}

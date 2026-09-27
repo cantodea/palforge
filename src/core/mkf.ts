@@ -69,6 +69,23 @@ export function readMkfChunk(buffer: ArrayBuffer, chunk: MkfChunk): Uint8Array {
   return new Uint8Array(buffer.slice(chunk.offset, chunk.offset + chunk.size))
 }
 
+/** Build a separate archive for an isolated runtime; never write the source. */
+export function encodeMkf(chunks: Uint8Array[]): Uint8Array {
+  const tableSize = (chunks.length + 1) * 4
+  const size = tableSize + chunks.reduce((total, chunk) => total + chunk.length, 0)
+  if (size > 0xffffffff) throw new MkfFormatError('MKF 超出 32 位偏移范围')
+  const output = new Uint8Array(size)
+  const view = new DataView(output.buffer)
+  let offset = tableSize
+  chunks.forEach((chunk, index) => {
+    view.setUint32(index * 4, offset, true)
+    output.set(chunk, offset)
+    offset += chunk.length
+  })
+  view.setUint32(chunks.length * 4, offset, true)
+  return output
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`

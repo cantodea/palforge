@@ -16,7 +16,7 @@
 | Domain model | 场景、单元、事件、脚本、动画、资源引用、项目差异 | PAL 场景、工程脚本、工程动画、资源语义索引与场景调试快照已实现 |
 | Editor features | 地图、脚本、资源、动画、模块、检查器 | 真实地图/事件查看、原版资源引用检索、工程脚本、Animation Forge 和场景内调试已实现 |
 | Project codec | `.palforge.json` / 后续压缩工程包的读写与迁移 | version 3 JSON 可保存脚本草稿、编译预览和工程动画 |
-| Runner bridge | 把本地资源复制到隔离文件系统并启动 SDLPAL | 浏览器 WASM 场景直达已实现；工程补丁注入与原生进程待开发 |
+| Runner bridge | 把本地资源复制到隔离文件系统并启动 SDLPAL | WASM 场景直达与动画资源替换已实现；脚本注入与原生进程待开发 |
 | Module SDK | 注册编辑页、事件、资源、存档字段和测试目标 | manifest 模型已实现 |
 
 ## 3. 资源引用
@@ -55,7 +55,7 @@ Animation Forge 导入图片时只把像素写入 `project://animations/{id}` �
 - 精灵表导出将透明 PNG 与布局 JSON 分开，布局保留每帧原始尺寸、位置、时长和锚点；
 - pack 与精灵表都不会包含 `pal://` 原始字节，也不是 MKF 写回格式。
 
-`project://` 绑定到 PAL 事件对象或 SDLPAL 运行时编号仍属于下一阶段；在映射落地前，Animation Forge 是可验证的创作/交换格式，不声称替换引擎资源。
+0.8.1 增加可选 `runtimeBinding`，将动画绑定到 MGO/F/ABC/FIRE 的明确 chunk。`animationRuntime.ts` 在启动前完成校验、图片解码、颜色匹配、RLE/sprite/YJ 编码，再生成全新的 MKF File 对象。运行器只挂载这些临时副本；原版对照直接挂载原始 File。任何一个绑定失败都阻止发送启动消息。
 
 ## 5. 模块 manifest 草案
 
@@ -127,4 +127,4 @@ Windows 原生 Runner 仍按下面的长期流程实现：
 
 ## 8. 接下来最值得先做的工作
 
-`Scene Lens`、`Script Forge`、`Animation Forge`、`Scene Debugger` 与 SDLPAL-WASM Runner 已形成原版只读 → 工程创作 → 独立验证 → 原始资源实机运行的链路。下一步应建立事件/角色到 `project://` 动画的显式绑定，并与 `entryRedirects`、追加脚本和消息一起注入 WASM 临时内存，再实现 Scene Forge 和 Windows 原生 Runner。
+`Scene Lens`、`Script Forge`、`Animation Forge`、`Scene Debugger` 与 SDLPAL-WASM Runner 已接通工程精灵绑定与实机替换。下一步是 `entryRedirects`、追加脚本和消息注入，以及 RNG 增量动画、Scene Forge 和 Windows 原生 Runner。

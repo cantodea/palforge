@@ -65,7 +65,7 @@ MKF chunk 本身通常只有编号和二进制内容，因此 PalForge 不维护
 
 ## 工程动画格式
 
-Animation Forge 不写 PAL 的 sprite/RLE 或 MKF 格式。自定义动画存在独立工程层：
+Animation Forge 将自定义动画保存在独立工程层；0.8.1 可编码临时 sprite/RLE/MKF 供实机测试，不写回源文件：
 
 | 字段 | 约束 |
 |---|---|
@@ -80,7 +80,17 @@ Animation Forge 不写 PAL 的 sprite/RLE 或 MKF 格式。自定义动画存在
 
 原版资源派生流程是 `MKF chunk → 解压/识别 → 索引色帧 → 指定 PAT 调色板 → PNG 工程帧`。PAL sprite 会保留全部已解码帧，RLE/FBP 生成单帧动画，`source.originalUri` 记录来源 chunk。RNG 需要从增量指令重建连续画面，当前解码器尚未实现这一阶段，因此导入器会拒绝它并显示原因。
 
-精灵表导出由 PNG 与 `palforge-sprite-sheet` version 1 JSON 组成。JSON 保存网格单元、每帧实际宽高、时长和锚点。它是将来资源绑定器的交换格式，不是对 MGO/RNG/MKF 的原地补丁。
+精灵表导出由 PNG 与 `palforge-sprite-sheet` version 1 JSON 组成。JSON 保存网格单元、每帧实际宽高、时长和锚点；实机绑定使用工程帧，不会自动读取此精灵表，也不会生成原地补丁。
+
+### 实机绑定（0.8.1，可选字段）
+
+`runtimeBinding` 保存 `archive`（MGO/F/ABC/FIRE.MKF）、`chunkIndex`、`paletteIndex`、`paletteVariant`（day/night）、`frameMapping`（exact/repeat）和 `enabled`。该字段是 version 1 动画包的向后兼容扩展；旧包不带绑定时仅导入工程帧。解析器拒绝不合法绑定，保存、导出和重新导入均保留绑定。
+
+`animationRuntime.ts` 校验目标精灵、原版帧数和重复绑定，将图片匹配到 PAT（alpha < 128 为透明），再由 `palEncoder.ts` 写出 RLE 和 word-aligned sprite。YJ_1 使用合法的 stored blocks；YJ_2 使用 literal-only 自适应 Huffman 编码，包含原生解码器所需的结束标记。输出保持目标 chunk 原有的压缩类型。
+
+原版帧位数量固定，`exact` 要求工程帧数相同；`repeat` 按序循环填充且不允许工程帧多于目标帧。RLE 将游程限制在单行内及 127 像素，避免 PAL 的高位命令歧义。锚点通过透明填充对齐；不允许裁掉脚底下方的图像。超出 512×512 或 sprite 的 16 位 word 偏移容量会报错。
+
+只有全部绑定转换成功才会创建并发送新的 `File` 副本；其余 chunk 保持字节一致，未涉及的文件保持原对象，错误不会静默回退为原版。运行器在新 iframe 中挂载副本，切换原版对照或重启时从挂载源重新准备，避免叠加补丁。
 
 ## 事件脚本读取
 
@@ -96,8 +106,9 @@ Animation Forge 不写 PAL 的 sprite/RLE 或 MKF 格式。自定义动画存在
 
 - 浏览器调试器维护独立的队伍位置与场景事件快照，并能让脚本的昼夜/调色板指令即时影响预览；它不读取真实存档，也不运行完整战斗、音频或复杂视觉系统。
 - 0.8 可以编辑工程脚本、工程动画、生成追加式脚本编译预览、在脚本沙盒中运行，并从指定场景的安全坐标启动真实 SDLPAL-WASM；出生点会避开阻挡半格与活动的接触触发事件。任何阶段都不写回 MKF/M.MSG，场景名称和未知 opcode 不从二进制中臆造。
-- Animation Forge 能创建、修改、播放和交换 `project://` 动画，但当前还没有把它们绑定到 PAL 事件对象或注入 SDLPAL 的 MGO/RNG 运行表。
-- SDLPAL 实机 iframe 当前读取原始资源的临时副本；追加式工程脚本与对白尚未注入引擎运行表，应使用 Scene Debugger 验证这些覆盖。
+- Animation Forge 可绑定并替换实机临时副本中的 MGO/F/ABC/FIRE 精灵，所有引用该 chunk 的对象都会受影响；RNG 仍不支持。
+- 动画时长/循环由引擎及原版脚本控制，调色板随场景/昼夜变化；工程中的毫秒时长不改变引擎节奏。地图预览与脚本沙盒仍显示原版精灵。
+- 追加式工程脚本与对白尚未注入引擎运行表，应使用 Scene Debugger 验证这些覆盖。
 - 调试器只实现已建模的 SDLPAL 指令效果；依赖外部运行状态的分支和未知副作用会停住，不能替代以后 Runner Bridge 的真实进程兼容测试。
 - 自动识别是启发式的；如遇到误判，应先在界面切换 DOS/Win95 模式，再记录文件名、chunk 编号和错误信息。
 

@@ -17,6 +17,16 @@ export type ForgeAnimationFrame = {
   anchorY: number
 }
 
+export const RUNTIME_SPRITE_ARCHIVES = ['MGO.MKF', 'F.MKF', 'ABC.MKF', 'FIRE.MKF'] as const
+export type ForgeAnimationBinding = {
+  archive: typeof RUNTIME_SPRITE_ARCHIVES[number]
+  chunkIndex: number
+  paletteIndex: number
+  paletteVariant: 'day' | 'night'
+  frameMapping: 'exact' | 'repeat'
+  enabled: boolean
+}
+
 export type ForgeAnimationDraft = {
   formatVersion: typeof FORGE_ANIMATION_PROJECT_VERSION
   id: string
@@ -24,6 +34,7 @@ export type ForgeAnimationDraft = {
   name: string
   loop: boolean
   source: ForgeAnimationSource
+  runtimeBinding?: ForgeAnimationBinding
   frames: ForgeAnimationFrame[]
   createdAt: number
   updatedAt: number
@@ -60,6 +71,7 @@ function cloneAnimation(animation: ForgeAnimationDraft): ForgeAnimationDraft {
   return {
     ...animation,
     source: { ...animation.source },
+    ...(animation.runtimeBinding ? { runtimeBinding: { ...animation.runtimeBinding } } : {}),
     frames: animation.frames.map(cloneFrame),
   }
 }
@@ -118,6 +130,18 @@ export function updateForgeAnimation(
   now = Date.now(),
 ): ForgeAnimationDraft {
   return { ...cloneAnimation(animation), ...patch, id: animation.id, uri: animation.uri, updatedAt: now }
+}
+
+export function updateForgeAnimationBinding(
+  animation: ForgeAnimationDraft,
+  binding: ForgeAnimationBinding | undefined,
+  now = Date.now(),
+): ForgeAnimationDraft {
+  if (binding && !isForgeAnimationBinding(binding)) throw new Error('无效的实机动画绑定')
+  const next = { ...cloneAnimation(animation), updatedAt: now }
+  if (binding) next.runtimeBinding = { ...binding }
+  else delete next.runtimeBinding
+  return next
 }
 
 export function updateForgeAnimationFrame(
@@ -183,6 +207,17 @@ function finiteInteger(value: unknown, min: number, max: number): value is numbe
   return Number.isInteger(value) && Number(value) >= min && Number(value) <= max
 }
 
+export function isForgeAnimationBinding(value: unknown): value is ForgeAnimationBinding {
+  if (!value || typeof value !== 'object') return false
+  const binding = value as Partial<ForgeAnimationBinding>
+  return RUNTIME_SPRITE_ARCHIVES.includes(binding.archive as ForgeAnimationBinding['archive'])
+    && finiteInteger(binding.chunkIndex, 0, 65535)
+    && finiteInteger(binding.paletteIndex, 0, 65535)
+    && (binding.paletteVariant === 'day' || binding.paletteVariant === 'night')
+    && (binding.frameMapping === 'exact' || binding.frameMapping === 'repeat')
+    && typeof binding.enabled === 'boolean'
+}
+
 function parseFrame(value: unknown): ForgeAnimationFrame | null {
   if (!value || typeof value !== 'object') return null
   const frame = value as Partial<ForgeAnimationFrame>
@@ -225,6 +260,7 @@ export function parseForgeAnimationDrafts(value: unknown): ForgeAnimationDraft[]
       || (source.kind === 'custom' && source.originalUri !== null)
       || (source.kind === 'derived' && (typeof source.originalUri !== 'string' || !source.originalUri.startsWith('pal://')))
       || !Array.isArray(animation.frames)
+      || (animation.runtimeBinding !== undefined && !isForgeAnimationBinding(animation.runtimeBinding))
     ) return []
     const frames = animation.frames.map(parseFrame)
     if (frames.some((frame) => frame === null)) return []
@@ -235,6 +271,7 @@ export function parseForgeAnimationDrafts(value: unknown): ForgeAnimationDraft[]
       name: animation.name,
       loop: animation.loop,
       source: { kind: source.kind, originalUri: source.originalUri },
+      ...(animation.runtimeBinding ? { runtimeBinding: { ...animation.runtimeBinding } } : {}),
       frames: frames as ForgeAnimationFrame[],
       createdAt: typeof animation.createdAt === 'number' ? animation.createdAt : 0,
       updatedAt: typeof animation.updatedAt === 'number' ? animation.updatedAt : 0,
