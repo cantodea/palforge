@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PalForge SDLPAL Runtime</title>
+  <style>
+    :root { color-scheme: dark; background: #071015; font-family: Inter, "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #071015; }
+    body { display: grid; place-items: center; }
+    #screen { position: relative; width: min(100vw, calc(100vh * 1.6)); aspect-ratio: 8 / 5; background: #000; border: 1px solid #294047; box-shadow: 0 18px 80px #000b; }
+    canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; outline: none; }
+    #overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 32px; background: radial-gradient(circle at 50% 45%, #10242ccc, #071015f4 70%); transition: opacity .2s ease; }
+    #overlay.hidden { opacity: 0; pointer-events: none; }
+    .card { width: min(480px, 90%); text-align: center; }
+    .mark { display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: 12px; color: #091014; background: #e8ae50; font-size: 22px; font-weight: 900; }
+    h1 { margin: 14px 0 6px; font-size: 18px; color: #e4eeec; }
+    p { margin: 0; color: #9bb0b4; font-size: 13px; line-height: 1.6; }
+    progress { width: 100%; height: 5px; margin-top: 18px; accent-color: #e8ae50; }
+    #detail { display: block; min-height: 20px; margin-top: 8px; color: #66868e; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <main id="screen">
+    <canvas id="canvas" width="640" height="400" tabindex="0"></canvas>
+    <div id="overlay">
+      <div class="card">
+        <span class="mark">PAL</span>
+        <h1 id="status">正在载入 SDLPAL WebAssembly</h1>
+        <p>真实 SDL 引擎运行在隔离的浏览器文件系统中。</p>
+        <progress id="progress" max="1" value="0"></progress>
+        <small id="detail"></small>
+      </div>
+    </div>
+  </main>
+  <script>
+    (function () {
+      'use strict';
+      const canvas = document.getElementById('canvas');
+      const overlay = document.getElementById('overlay');
+      const status = document.getElementById('status');
+      const progress = document.getElementById('progress');
+      const detail = document.getElementById('detail');
+      let runtimeReady = false;
+      let gameStarted = false;
+
+      function notify(type, message, extra) {
+        parent.postMessage(Object.assign({ source: 'palforge-sdlpal', type, message }, extra || {}), location.origin);
+      }
+
+      function setStatus(message, state, current, total) {
+        status.textContent = message;
+        detail.textContent = state === 'error' ? message : '';
+        if (typeof current === 'number' && typeof total === 'number' && total > 0) {
+          progress.max = total;
+          progress.value = current;
+        }
+        notify(state === 'error' ? 'error' : 'status', message, {
+          status: state,
+          progress: typeof current === 'number' ? { current, total } : undefined,
+        });
+      }
+
+      function log(message, error) {
+        const text = String(message || '');
+        (error ? console.error : console.log)(text);
+        notify(error ? 'error' : 'log', text);
+      }
+
+      window.Module = {
+        noInitialRun: true,
+        canvas,
+        locateFile(path) { return new URL(path, location.href).href; },
+        print(text) { log(text, false); },
+        printErr(text) { log(text, true); },
+        setStatus(text) { if (text) setStatus(text, 'booting'); },
+        onRuntimeInitialized() {
+          runtimeReady = true;
+          setStatus('SDLPAL 引擎就绪', 'ready');
+        },
+      };
+
+      async function launch(payload) {
+        if (!runtimeReady) throw new Error('SDLPAL WebAssembly 尚未初始化');
+        if (gameStarted) throw new Error('当前运行器已经启动；请关闭后重新建立实例');
+        gameStarted = true;
+        setStatus('正在建立只读资源副本', 'mounting', 0, payload.files.length);
+        try { FS.mkdir('/data'); } catch (_) { /* fresh runtimes may already contain the directory */ }
+
+        for (let index = 0; index < payload.files.length; index += 1) {
+          const file = payload.files[index];
+          const name = file.name.toLowerCase();
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          FS.writeFile('/data/' + name, bytes, { encoding: 'binary' });
+          setStatus('正在复制游戏资源', 'mounting', index + 1, payload.files.length);
+        }
+
+        if (!FS.analyzePath('/data/sss.mkf').exists || !FS.analyzePath('/data/data.mkf').exists) {
+          throw new Error('运行 SDLPAL 至少需要 SSS.MKF 与 DATA.MKF；请重新选择完整游戏目录');
+        }
+
+        const target = payload.target;
+        const setTarget = Module.cwrap('PALFORGE_SetLaunchTarget', null,
+          ['number', 'number', 'number', 'number', 'number', 'number', 'number']);
+        setTarget(target.scene, target.worldX, target.worldY, target.eventObjectId,
+          target.scriptEntry, target.scriptMode, target.direction);
+        const main = Module.cwrap('EMSCRIPTEN_main', 'number', ['number', 'number'], { async: true });
+        setStatus('SDLPAL 实机运行中', 'running');
+        overlay.classList.add('hidden');
+        canvas.focus();
+        Promise.resolve(main(0, 0)).then(function () {
+          overlay.classList.remove('hidden');
+          setStatus('SDLPAL 已退出', 'exited');
+        }).catch(function (reason) {
+          overlay.classList.remove('hidden');
+          setStatus(reason instanceof Error ? reason.message : String(reason), 'error');
+        });
+      }
+
+      window.addEventListener('message', function (event) {
+        if (event.origin !== location.origin || event.source !== parent) return;
+        if (!event.data || event.data.type !== 'palforge:launch') return;
+        launch(event.data).catch(function (reason) {
+          gameStarted = false;
+          setStatus(reason instanceof Error ? reason.message : String(reason), 'error');
+        });
+      });
+
+      const runtimeScript = document.createElement('script');
+      runtimeScript.src = 'sdlpal.js';
+      runtimeScript.async = true;
+      runtimeScript.onerror = function () {
+        setStatus('缺少 SDLPAL 运行时文件；请确认 sdlpal.js 与 sdlpal.wasm 已安装', 'error');
+      };
+      document.body.appendChild(runtimeScript);
+    }());
+  </script>
+</body>
+</html>

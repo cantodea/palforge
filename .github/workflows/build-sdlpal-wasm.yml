@@ -1,0 +1,92 @@
+name: Build SDLPAL WebAssembly runtime
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'runtime/sdlpal/**'
+      - '.github/workflows/build-sdlpal-wasm.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      EMSDK_TAG: 4.0.7
+      SDLPAL_REVISION: a2e13e5ff83cf33448b3de3b8b612c07e28eacd7
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check pinned revision
+        run: test "$(tr -d '\r\n' < runtime/sdlpal/UPSTREAM_REVISION)" = "$SDLPAL_REVISION"
+
+      - name: Checkout pinned SDLPAL source
+        run: |
+          git clone https://github.com/sdlpal/sdlpal.git "$RUNNER_TEMP/sdlpal"
+          git -C "$RUNNER_TEMP/sdlpal" checkout "$SDLPAL_REVISION"
+          git -C "$RUNNER_TEMP/sdlpal" submodule update --init --recursive
+
+      - name: Apply PalForge adapter in temporary tree
+        run: |
+          cp runtime/sdlpal/palforge_runtime.c "$RUNNER_TEMP/sdlpal/palforge_runtime.c"
+          cp runtime/sdlpal/palforge_runtime.h "$RUNNER_TEMP/sdlpal/palforge_runtime.h"
+          sed -i 's/\r$//' "$RUNNER_TEMP/sdlpal/emscripten/Makefile" "$RUNNER_TEMP/sdlpal/main.c" "$RUNNER_TEMP/sdlpal/game.c" "$RUNNER_TEMP/sdlpal/play.c"
+          git -C "$RUNNER_TEMP/sdlpal" apply "$GITHUB_WORKSPACE/runtime/sdlpal/patches/palforge-runtime.patch"
+
+      - name: Start Emscripten build container
+        run: |
+          docker run --name palforge-emsdk -v "$RUNNER_TEMP/sdlpal:/src" -d "emscripten/emsdk:$EMSDK_TAG" sleep infinity
+          docker exec palforge-emsdk apt-get update
+          docker exec palforge-emsdk apt-get install -y --no-install-recommends pkg-config
+
+      - name: Build SDL3
+        run: |
+          docker exec -e PKG_CONFIG_PATH=/src/install_prefix/lib/pkgconfig palforge-emsdk \
+            emcmake cmake -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST_LIBRARY=OFF \
+            -DCMAKE_INSTALL_PREFIX:PATH=/src/install_prefix -S /src/3rd/SDL -B /src/3rd/SDL -G 'Unix Makefiles'
+          docker exec -e PKG_CONFIG_PATH=/src/install_prefix/lib/pkgconfig palforge-emsdk \
+            make -C /src/3rd/SDL install -j2
+
+      - name: Build patched SDLPAL
+        run: |
+          docker exec -e PKG_CONFIG_PATH=/src/install_prefix/lib/pkgconfig palforge-emsdk \
+            make -C /src/emscripten -j2
+
+      - name: Package reproducible runtime
+        run: |
+          mkdir -p runtime-dist
+          cp "$RUNNER_TEMP/sdlpal/emscripten/sdlpal.js" runtime-dist/
+          cp "$RUNNER_TEMP/sdlpal/emscripten/sdlpal.wasm" runtime-dist/
+          cp runtime/sdlpal/UPSTREAM_REVISION runtime-dist/
+          cp runtime/sdlpal/NOTICE.md runtime-dist/
+          cp LICENSE runtime-dist/PALFORGE-LICENSE
+          (cd runtime-dist && sha256sum sdlpal.js sdlpal.wasm > SHA256SUMS)
+          grep -q PALFORGE_SetLaunchTarget runtime-dist/sdlpal.js
+
+      - name: Install runtime in PalForge
+        run: |
+          mkdir -p public/sdlpal-runtime
+          cp runtime-dist/sdlpal.js runtime-dist/sdlpal.wasm public/sdlpal-runtime/
+          cp runtime-dist/NOTICE.md runtime-dist/PALFORGE-LICENSE public/sdlpal-runtime/
+          cp runtime-dist/UPSTREAM_REVISION runtime-dist/SHA256SUMS public/sdlpal-runtime/
+
+      - name: Commit reproducible runtime to the branch
+        if: github.event_name == 'push'
+        run: |
+          git add public/sdlpal-runtime
+          if git diff --cached --quiet; then
+            echo 'Pinned browser runtime is already up to date.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Update pinned SDLPAL WebAssembly runtime [skip ci]'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: palforge-sdlpal-wasm
+          path: runtime-dist
+          if-no-files-found: error
